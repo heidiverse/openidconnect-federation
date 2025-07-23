@@ -1,5 +1,6 @@
 pub mod jwt;
 pub mod models;
+pub mod policy;
 
 #[cfg(test)]
 mod tests {

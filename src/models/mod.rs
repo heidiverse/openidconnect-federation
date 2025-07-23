@@ -315,6 +315,9 @@ macro_rules! models {
                     let v = serde_json::to_value(&self.$field).unwrap_or(serde_json::Value ::Null);
                     transformer.set_field(stringify!($field), v.into());
                 )*
+                for (key, value) in &self.additional_fields {
+                    transformer.set_field(key, value.clone().into());
+                }
             }
         }
         impl crate::models::transformer::Transformer for $name {
