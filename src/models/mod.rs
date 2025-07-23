@@ -1,0 +1,452 @@
+pub mod errors;
+pub mod transformer;
+pub mod trust_chain;
+pub mod verifiers;
+
+use josekit::jwk::JwkSet as JoseJwkSet;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value as JsonValue;
+use tracing::instrument;
+
+use crate::{
+    jwt::{Jwt, Unverified},
+    models::errors::{FederationError, InternetError, TrustChainError},
+};
+
+#[derive(Debug, Clone)]
+pub enum EntityConfig {
+    Leaf(Jwt<EntityStatement>),
+    Intermediate(Jwt<EntityStatement>),
+    TrustAnchor(Jwt<EntityStatement>),
+}
+impl EntityConfig {
+    pub fn payload_unverified(&self) -> Unverified<&EntityStatement> {
+        match self {
+            EntityConfig::Leaf(jwt)
+            | EntityConfig::Intermediate(jwt)
+            | EntityConfig::TrustAnchor(jwt) => jwt.payload_unverified(),
+        }
+    }
+    pub fn jwks(&self) -> JwkSet {
+        match self {
+            EntityConfig::Leaf(jwt)
+            | EntityConfig::Intermediate(jwt)
+            | EntityConfig::TrustAnchor(jwt) => {
+                let unverified = jwt.payload_unverified();
+                unverified.insecure().jwks.clone()
+            }
+        }
+    }
+    pub fn sub(&self) -> String {
+        match self {
+            EntityConfig::Leaf(jwt)
+            | EntityConfig::Intermediate(jwt)
+            | EntityConfig::TrustAnchor(jwt) => {
+                let unverified = jwt.payload_unverified();
+                unverified.insecure().sub.clone()
+            }
+        }
+    }
+    #[instrument(skip(self), err)]
+    pub fn verify(&self) -> Result<(), FederationError> {
+        // verify signature
+        match self {
+            EntityConfig::Leaf(jwt)
+            | EntityConfig::Intermediate(jwt)
+            | EntityConfig::TrustAnchor(jwt) => {
+                jwt.verify_signature(&jwt.payload_unverified().insecure().jwks)
+            }
+        }?;
+        // verify jwt payload
+        match self {
+            EntityConfig::Intermediate(jwt)
+            | EntityConfig::Leaf(jwt)
+            | EntityConfig::TrustAnchor(jwt) => jwt.verify(self)?,
+        };
+        Ok(())
+    }
+    #[instrument(skip(self), err)]
+    pub fn fetch_subordinate(&self, sub: &str) -> Result<Jwt<EntityStatement>, FederationError> {
+        match self {
+            EntityConfig::Leaf(_) => Err(TrustChainError::LeafCannotHaveSubordinate(
+                "Leaf entities cannot have subordinates".to_string(),
+            )
+            .into()),
+            EntityConfig::Intermediate(jwt) | EntityConfig::TrustAnchor(jwt) => {
+                let es = jwt.payload_unverified();
+                let es = jwt.payload(&es.insecure().jwks)?;
+                let Some(metadata) = es.metadata.as_ref() else {
+                    return Err(TrustChainError::InvalidEntityConfig(
+                        "Entity Config must have metadata".to_string(),
+                    )
+                    .into());
+                };
+                let Some(federation_entity) = metadata.get("federation_entity") else {
+                    return Err(TrustChainError::InvalidEntityConfig(
+                        "Entity Config must have federation_entity".to_string(),
+                    )
+                    .into());
+                };
+                let mut fe = FederationEntity::default();
+                federation_entity.write_to_transformer(&mut fe);
+                let Some(federation_fetch_endpoint) = fe.federation_fetch_endpoint else {
+                    return Err(TrustChainError::InvalidEntityConfig("Federation Entity must have federation_fetch_endpoint for non leaf entities".to_string()).into());
+                };
+                let result = reqwest::blocking::get(format!(
+                    "{federation_fetch_endpoint}?sub={}",
+                    urlencoding::encode(sub)
+                ))
+                .map_err(|e| InternetError::InvalidResponse(format!("{e}")))?
+                .text()
+                .map_err(|e| InternetError::InvalidResponse(format!("{e}")))?;
+                Ok(result.parse::<Jwt<EntityStatement>>()?)
+            }
+        }
+    }
+
+    #[instrument(skip(self), err)]
+    pub fn fetch_authority(&self, authority: &str) -> Result<EntityConfig, FederationError> {
+        match self {
+            EntityConfig::Leaf(_) | EntityConfig::Intermediate(_) => {
+                let result =
+                    reqwest::blocking::get(format!("{authority}/.well-known/openid-federation"))
+                        .map_err(|e| InternetError::InvalidResponse(format!("{e}")))?
+                        .text()
+                        .map_err(|e| InternetError::InvalidResponse(format!("{e}")))?;
+                let config = result.parse::<Jwt<EntityStatement>>()?;
+                Ok(
+                    if config
+                        .payload_unverified()
+                        .insecure()
+                        .authority_hints
+                        .is_some()
+                    {
+                        EntityConfig::Intermediate(config)
+                    } else {
+                        EntityConfig::TrustAnchor(config)
+                    },
+                )
+            }
+            EntityConfig::TrustAnchor(_) => {
+                Err(TrustChainError::RootHasNoAuthority("TrustAnchor".to_string()).into())
+            }
+        }
+    }
+}
+
+impl EntityConfig {
+    pub fn refresh(&mut self) -> Result<(), FederationError> {
+        match self {
+            EntityConfig::Leaf(jwt)
+            | EntityConfig::Intermediate(jwt)
+            | EntityConfig::TrustAnchor(jwt) => {
+                let c = reqwest::blocking::ClientBuilder::new()
+                    .danger_accept_invalid_certs(true)
+                    .build()
+                    .unwrap();
+                let result = c
+                    .get(format!(
+                        "{}/.well-known/openid-federation",
+                        jwt.payload_unverified().insecure().sub()
+                    ))
+                    .build()
+                    .unwrap();
+                let result = c
+                    .execute(result)
+                    .map_err(|e| InternetError::InvalidResponse(format!("{e}")))?
+                    .text()
+                    .map_err(|e| InternetError::InvalidResponse(format!("{e}")))?;
+                let new_statement = result.parse::<Jwt<EntityStatement>>()?;
+                *self = EntityConfig::TrustAnchor(new_statement);
+            }
+        }
+        Ok(())
+    }
+    pub fn new_leaf(entity_statement: Jwt<EntityStatement>) -> Option<Self> {
+        if entity_statement
+            .payload_unverified()
+            .insecure()
+            .authority_hints
+            .is_none()
+        {
+            return None;
+        }
+        Some(EntityConfig::Leaf(entity_statement))
+    }
+    pub fn new_intermediate(entity_statement: Jwt<EntityStatement>) -> Option<Self> {
+        if entity_statement
+            .payload_unverified()
+            .insecure()
+            .authority_hints
+            .is_none()
+        {
+            return None;
+        }
+        Some(EntityConfig::Intermediate(entity_statement))
+    }
+    pub fn new_trust_anchor(entity_statement: Jwt<EntityStatement>) -> Option<Self> {
+        if entity_statement
+            .payload_unverified()
+            .insecure()
+            .authority_hints
+            .is_some()
+        {
+            return None;
+        }
+        Some(EntityConfig::TrustAnchor(entity_statement))
+    }
+}
+
+crate::models!(
+    #[derive(Debug, Clone)]
+    pub struct EntityStatement {
+        iss: String,
+        sub: String,
+        iat: u64,
+        exp: u64,
+        jwks: JwkSet,
+        authority_hints: Option<Vec<String>>,
+        metadata: Option<transformer::Value>,
+        metadata_policy: Option<transformer::Value>,
+        constraints: Option<transformer::Value>,
+        crit: Option<Vec<String>>,
+        metadata_policy_crit: Option<Vec<String>>,
+        trust_marks: Option<Vec<TrustMark>>,
+        trust_mark_issuers: Option<transformer::Value>,
+        trust_mark_owners: Option<TrustMarkOwner>,
+        source_endpoint: Option<String>,
+        trust_anchor: Option<String>,
+    }
+);
+crate::models!(
+    #[derive(Debug, Clone)]
+    pub struct TrustMark {
+        trust_mark_type: String,
+        trust_mark: String,
+    }
+);
+crate::models!(
+    #[derive(Debug, Clone)]
+    pub struct TrustMarkOwner {
+        sub: String,
+        jwks: JwkSet,
+    }
+);
+crate::models!(
+    #[derive(Debug, Clone, Default)]
+    pub struct FederationEntity {
+        federation_fetch_endpoint: Option<String>,
+        federation_list_endpoint: Option<String>,
+    }
+);
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct JwkSet(
+    #[serde(serialize_with = "JwkSet::serialize_to_string")]
+    #[serde(deserialize_with = "JwkSet::deserialize")]
+    pub JoseJwkSet,
+);
+
+impl JwkSet {
+    fn serialize_to_string<S>(set: &JoseJwkSet, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let set: &serde_json::Map<String, serde_json::Value> = set.as_ref();
+        serializer.serialize_some(set)
+    }
+    fn deserialize<'de, D>(deserializer: D) -> Result<JoseJwkSet, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let set: serde_json::Value = serde_json::Value::deserialize(deserializer)?;
+        let Ok(set) = serde_json::from_value(set) else {
+            return Err(serde::de::Error::custom("Failed to deserialize JWK set"));
+        };
+        let Ok(set) = JoseJwkSet::from_map(set) else {
+            return Err(serde::de::Error::custom("Failed to deserialize JWK set"));
+        };
+        Ok(set)
+    }
+}
+
+crate::extension!([jti: String], EntityStatement);
+
+#[macro_export]
+macro_rules! extension {
+    ([$($field:ident: $type:ty),*], $struct:ty) => {
+        impl $struct {
+            $(
+                pub fn $field(&self) -> $type {
+                    let value = self.additional_fields.get(stringify!($field)).unwrap_or(&JsonValue::Null);
+                    serde_json::from_value(value.to_owned()).unwrap()
+                }
+            )*
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! models {
+    ($(#[$($meta:tt)*])* $vis:vis struct $name:ident { $( $(#[$($meta_field:tt)*])* $field:ident : $type:ty),*, }) => {
+        #[derive(serde::Deserialize, serde::Serialize)]
+        $(#[$($meta)*])*
+        $vis struct $name {
+            $($(#[$($meta_field)*])* pub $field: $type),*,
+            #[serde(flatten)]
+            pub additional_fields: serde_json::Map<String, serde_json::Value>,
+        }
+        impl $name {
+            $(
+                pub fn $field(&self) -> $type {
+                    self.$field.clone()
+                }
+            )*
+            pub fn get_field(&self, name: &str) -> serde_json::Value {
+                match name {
+                    $(stringify!($field) => {
+                       serde_json::to_value(&self.$field).unwrap_or(serde_json::Value ::Null)
+                    } )*
+                    _ => self.additional_fields.get(name).unwrap_or(&serde_json::Value ::Null).to_owned()
+                }
+            }
+            pub fn to_transformer(&self, transformer: &mut dyn crate::models::transformer::Transformer) {
+                $(
+                    let v = serde_json::to_value(&self.$field).unwrap_or(serde_json::Value ::Null);
+                    transformer.set_field(stringify!($field), v.into());
+                )*
+            }
+        }
+        impl crate::models::transformer::Transformer for $name {
+            fn set_field(&mut self, name: &str, value: crate::models::transformer::Value) {
+                match name {
+                    $(stringify!($field) => {
+                        self.$field = serde_json::from_value(value.into()).unwrap();
+                    } )*
+                    _ =>  { self.additional_fields.insert(name.to_string(), value.into()); }
+                }
+            }
+            fn transform(self, transformer: &mut dyn crate::models::transformer::Transformer) -> Result<(), String> {
+                self.to_transformer(transformer);
+                Ok(())
+            }
+        }
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use josekit::Value;
+    use josekit::jwk::JwkSet as JoseJwkSet;
+
+    use crate::models::{EntityStatement, JwkSet, transformer::Transformer};
+    #[test]
+    fn test_parsing_entity_statement() {
+        let es = include_str!("../../test_resources/figure_2_example_entity_statement.json");
+        let es: EntityStatement = serde_json::from_str(es).unwrap();
+        println!("{:#?}", es);
+        let jti = es.get_field("jti");
+        assert_eq!(
+            jti,
+            serde_json::Value::String(String::from("7l2lncFdY6SlhNia"))
+        );
+        let jti = es.jti();
+        assert_eq!(jti, String::from("7l2lncFdY6SlhNia"));
+    }
+    #[test]
+    fn test_transformer() {
+        let es = include_str!("../../test_resources/figure_2_example_entity_statement.json");
+        let es: EntityStatement = serde_json::from_str(es).unwrap();
+        #[derive(Debug)]
+        struct EntityConfiguration {
+            iss: String,
+            sub: String,
+            iat: u64,
+            exp: u64,
+            jwks: JwkSet,
+            authority_hints: Option<Vec<String>>,
+            metadata: Option<Value>,
+            metadata_policy: Option<Value>,
+        }
+        impl Transformer for EntityConfiguration {
+            fn set_field(&mut self, name: &str, value: super::transformer::Value) {
+                println!("{}: {:?}", name, value);
+                match name {
+                    "iss" => self.iss = value.as_str().unwrap().to_string(),
+                    "sub" => self.sub = value.as_str().unwrap().to_string(),
+                    "iat" => self.iat = value.as_u64().unwrap(),
+                    "exp" => self.exp = value.as_u64().unwrap(),
+                    "jwks" => self.jwks = JwkSet(JoseJwkSet::new()),
+                    "authority_hints" => self.authority_hints = value.into_typed_array(),
+                    "metadata" => self.metadata = value.into(),
+                    "metadata_policy" => self.metadata_policy = value.into(),
+                    _ => {}
+                }
+            }
+            fn transform(self, _transformer: &mut dyn Transformer) -> Result<(), String> {
+                todo! {}
+            }
+        }
+        let mut transformer = EntityConfiguration {
+            iss: String::from("example.com"),
+            sub: String::from("example.com"),
+            iat: 1630456800,
+            exp: 1630456800,
+            jwks: JwkSet(JoseJwkSet::new()),
+            authority_hints: None,
+            metadata: None,
+            metadata_policy: None,
+        };
+        es.to_transformer(&mut transformer);
+        println!("{:?}", transformer);
+    }
+    #[test]
+    fn test_transformer_value() {
+        let es = include_str!("../../test_resources/figure_2_example_entity_statement.json");
+        let es: serde_json::Value = serde_json::from_str(es).unwrap();
+        let es: crate::models::transformer::Value = es.into();
+        #[derive(Debug)]
+        struct EntityConfiguration {
+            iss: String,
+            sub: String,
+            iat: u64,
+            exp: u64,
+            jwks: JwkSet,
+            authority_hints: Option<Vec<String>>,
+            metadata: Option<Value>,
+            metadata_policy: Option<Value>,
+        }
+        impl Transformer for EntityConfiguration {
+            fn set_field(&mut self, name: &str, value: super::transformer::Value) {
+                println!("{}: {:?}", name, value);
+                match name {
+                    "iss" => self.iss = value.as_str().unwrap().to_string(),
+                    "sub" => self.sub = value.as_str().unwrap().to_string(),
+                    "iat" => self.iat = value.as_u64().unwrap(),
+                    "exp" => self.exp = value.as_u64().unwrap(),
+                    "jwks" => self.jwks = JwkSet(JoseJwkSet::new()),
+                    "authority_hints" => self.authority_hints = value.into_typed_array(),
+                    "metadata" => self.metadata = value.into(),
+                    "metadata_policy" => self.metadata_policy = value.into(),
+                    _ => {}
+                }
+            }
+
+            fn transform(self, _transformer: &mut dyn Transformer) -> Result<(), String> {
+                todo!()
+            }
+        }
+        let mut transformer = EntityConfiguration {
+            iss: String::from("example.com"),
+            sub: String::from("example.com"),
+            iat: 1630456800,
+            exp: 1630456800,
+            jwks: JwkSet(JoseJwkSet::new()),
+            authority_hints: None,
+            metadata: None,
+            metadata_policy: None,
+        };
+        es.write_to_transformer(&mut transformer);
+        println!("{:?}", transformer);
+    }
+}
