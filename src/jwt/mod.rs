@@ -75,6 +75,8 @@ pub trait JwtVerifier<T: Serialize + DeserializeOwned + Debug> {
     fn verify_body(&self, jwt: &Jwt<T>) -> Result<(), FederationError>;
 }
 
+pub trait Jwtable: Serialize + DeserializeOwned + Debug {}
+
 #[derive(Clone, Debug)]
 pub struct Jwt<T: Serialize + DeserializeOwned + Debug> {
     payload: T,

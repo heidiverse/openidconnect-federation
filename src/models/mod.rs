@@ -9,8 +9,9 @@ use serde_json::Value as JsonValue;
 use tracing::instrument;
 
 use crate::{
+    DefaultConfig, FetchConfig, fetch_jwt,
     jwt::{Jwt, Unverified},
-    models::errors::{FederationError, InternetError, TrustChainError},
+    models::errors::{FederationError, TrustChainError},
 };
 
 #[derive(Debug, Clone)]
@@ -92,14 +93,10 @@ impl EntityConfig {
                 let Some(federation_fetch_endpoint) = fe.federation_fetch_endpoint else {
                     return Err(TrustChainError::InvalidEntityConfig("Federation Entity must have federation_fetch_endpoint for non leaf entities".to_string()).into());
                 };
-                let result = reqwest::blocking::get(format!(
+                fetch_jwt::<_, DefaultConfig>(&format!(
                     "{federation_fetch_endpoint}?sub={}",
                     urlencoding::encode(sub)
                 ))
-                .map_err(|e| InternetError::InvalidResponse(format!("{e}")))?
-                .text()
-                .map_err(|e| InternetError::InvalidResponse(format!("{e}")))?;
-                Ok(result.parse::<Jwt<EntityStatement>>()?)
             }
         }
     }
@@ -108,12 +105,9 @@ impl EntityConfig {
     pub fn fetch_authority(&self, authority: &str) -> Result<EntityConfig, FederationError> {
         match self {
             EntityConfig::Leaf(_) | EntityConfig::Intermediate(_) => {
-                let result =
-                    reqwest::blocking::get(format!("{authority}/.well-known/openid-federation"))
-                        .map_err(|e| InternetError::InvalidResponse(format!("{e}")))?
-                        .text()
-                        .map_err(|e| InternetError::InvalidResponse(format!("{e}")))?;
-                let config = result.parse::<Jwt<EntityStatement>>()?;
+                let config = fetch_jwt::<EntityStatement, DefaultConfig>(&format!(
+                    "{authority}/.well-known/openid-federation"
+                ))?;
                 Ok(
                     if config
                         .payload_unverified()
@@ -135,28 +129,20 @@ impl EntityConfig {
 }
 
 impl EntityConfig {
-    pub fn refresh(&mut self) -> Result<(), FederationError> {
+    pub fn load_from_url<Config: FetchConfig>(url: &str) -> Result<Self, FederationError> {
+        let new_statement =
+            fetch_jwt::<_, Config>(&format!("{url}/.well-known/openid-federation",))?;
+        Ok(Self::Leaf(new_statement))
+    }
+    pub fn refresh<Config: FetchConfig>(&mut self) -> Result<(), FederationError> {
         match self {
             EntityConfig::Leaf(jwt)
             | EntityConfig::Intermediate(jwt)
             | EntityConfig::TrustAnchor(jwt) => {
-                let c = reqwest::blocking::ClientBuilder::new()
-                    .danger_accept_invalid_certs(true)
-                    .build()
-                    .unwrap();
-                let result = c
-                    .get(format!(
-                        "{}/.well-known/openid-federation",
-                        jwt.payload_unverified().insecure().sub()
-                    ))
-                    .build()
-                    .unwrap();
-                let result = c
-                    .execute(result)
-                    .map_err(|e| InternetError::InvalidResponse(format!("{e}")))?
-                    .text()
-                    .map_err(|e| InternetError::InvalidResponse(format!("{e}")))?;
-                let new_statement = result.parse::<Jwt<EntityStatement>>()?;
+                let new_statement = fetch_jwt::<_, Config>(&format!(
+                    "{}/.well-known/openid-federation",
+                    jwt.payload_unverified().insecure().sub()
+                ))?;
                 *self = EntityConfig::TrustAnchor(new_statement);
             }
         }

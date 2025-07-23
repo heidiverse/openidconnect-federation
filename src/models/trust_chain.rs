@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, marker::PhantomData};
 
 use tracing::{error, instrument};
 
 use crate::{
+    DefaultConfig, FetchConfig,
     jwt::Jwt,
     models::{
         EntityConfig, EntityStatement,
@@ -11,9 +12,10 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub struct TrustChain {
+pub struct TrustChain<Config: FetchConfig = DefaultConfig> {
     pub leaf: Entity,
     pub trust_entities: HashMap<String, Entity>,
+    phantom: PhantomData<Config>,
 }
 
 #[derive(Debug, Clone)]
@@ -81,7 +83,7 @@ impl Entity {
     }
 }
 
-impl TrustChain {
+impl<Config: FetchConfig> TrustChain<Config> {
     pub fn verify(&self) -> Result<(), Vec<FederationError>> {
         // leaf needs entity config
         let mut errors = vec![];
@@ -180,7 +182,18 @@ impl TrustChain {
         Self {
             leaf,
             trust_entities: HashMap::new(),
+            phantom: PhantomData,
         }
+    }
+    pub fn new_from_url(url: &str) -> Result<Self, FederationError> {
+        Ok(Self {
+            leaf: Entity {
+                entity_config: Some(EntityConfig::load_from_url::<Config>(url)?),
+                subordinate_statement: vec![],
+            },
+            trust_entities: HashMap::new(),
+            phantom: PhantomData,
+        })
     }
     #[instrument(skip(chain))]
     pub fn from_trust_chain(chain: &Vec<String>) -> Option<Self> {
@@ -239,6 +252,7 @@ impl TrustChain {
                 subordinate_statement: vec![],
             },
             trust_entities,
+            phantom: PhantomData,
         })
     }
     #[instrument(skip(self))]
