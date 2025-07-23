@@ -3,7 +3,7 @@ use std::str::FromStr;
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
-    jwt::{Jwt, Jwtable},
+    jwt::Jwt,
     models::{
         errors::{FederationError, InternetError},
         trust_chain::TrustChain,
@@ -83,7 +83,7 @@ mod tests {
     use crate::{
         DefaultConfig, DefaultTrustChain,
         jwt::Jwt,
-        models::{self, EntityConfig, EntityStatement, trust_chain::TrustChain},
+        models::{self, EntityConfig, EntityStatement},
     };
 
     #[test]

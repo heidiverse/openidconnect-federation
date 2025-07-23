@@ -1,3 +1,5 @@
+// pub mod jwk;
+
 use std::{
     fmt::Debug,
     marker::PhantomData,
@@ -6,7 +8,10 @@ use std::{
 };
 
 use base64::Engine;
-use josekit::{JoseHeader, jws::JwsVerifier};
+use josekit::{
+    JoseHeader,
+    jws::{JwsHeader, JwsVerifier},
+};
 use serde::{Serialize, de::DeserializeOwned};
 use tracing::instrument;
 
@@ -99,6 +104,10 @@ impl<T: Serialize + DeserializeOwned + Debug> Jwt<T> {
         let _ = self.verify_signature(jwk_set)?;
         Ok(&self.payload)
     }
+    pub fn payload_with_verifier(&self, verifier: &dyn JwsVerifier) -> Result<&T, FederationError> {
+        let _ = self.verify_signature_with_verifier(verifier)?;
+        Ok(&self.payload)
+    }
     #[instrument(skip(self, jwk_set), err)]
     pub fn verify_signature(&self, jwk_set: &JwkSet) -> Result<(), FederationError> {
         let header = josekit::jwt::decode_header(&self.jwt_at(0))
@@ -109,6 +118,38 @@ impl<T: Serialize + DeserializeOwned + Debug> Jwt<T> {
                 "No matching key found".to_string(),
             )));
         };
+        for s in &self.signatures {
+            let sig_bytes = base64::prelude::BASE64_URL_SAFE_NO_PAD
+                .decode(&s.signature)
+                .map_err(|e| JwsError::EncodingError(format!("{e}")))?;
+            println!("alg: {}", verifier.algorithm().name());
+
+            let _ = verifier
+                .verify(
+                    format!("{}.{}", s.protected, self.original_payload).as_bytes(),
+                    sig_bytes.as_slice(),
+                )
+                .map_err(|e| JwsError::InvalidSignature(format!("{e}")))?;
+        }
+        Ok(())
+    }
+    #[instrument(skip(self, verifier), err)]
+    pub fn verify_signature_with_verifier(
+        &self,
+        verifier: &dyn JwsVerifier,
+    ) -> Result<(), FederationError> {
+        let header = josekit::jwt::decode_header(&self.jwt_at(0))
+            .map_err(|e| FederationError::Jws(JwsError::InvalidHeader(format!("{e}"))))?;
+        if verifier.algorithm().name()
+            != header
+                .as_any()
+                .downcast_ref::<JwsHeader>()
+                .unwrap()
+                .algorithm()
+                .unwrap()
+        {
+            return Err(JwsError::InvalidHeader(format!("algorithm not matching")).into());
+        }
         for s in &self.signatures {
             let sig_bytes = base64::prelude::BASE64_URL_SAFE_NO_PAD
                 .decode(&s.signature)

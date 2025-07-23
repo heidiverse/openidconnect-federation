@@ -100,6 +100,32 @@ impl<Config: FetchConfig> TrustChain<Config> {
                 )));
             }
         }
+        if sub
+            .payload_unverified()
+            .insecure()
+            .authority_hints()
+            .is_none()
+            && !matches!(sub, EntityConfig::TrustAnchor(_))
+        {
+            errors.push(TrustChainError::LeafNeedsAuthorityHints(format!(
+                "EntityConfigError: Missing authority hints"
+            )));
+        }
+        let authority_hints = sub
+            .payload_unverified()
+            .insecure()
+            .authority_hints()
+            .unwrap_or_default();
+        if authority_hints.is_empty() {
+            errors.push(TrustChainError::AuthorityHintsMustNotBeEmpty(format!(
+                "EntityConfigError: Authority hints must not be empty"
+            )));
+        }
+        if self.leaf.subordinate_statement.is_empty() {
+            errors.push(TrustChainError::BrokenChain(format!(
+                "No authority found for leaf"
+            )))
+        }
         // check each trust entry
         for (sub, statement) in &self.trust_entities {
             println!("Verifying trust for: {sub}");

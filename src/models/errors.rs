@@ -7,6 +7,13 @@ crate::error_model!(
         TrustChain(TrustChainError),
         Internet(InternetError),
         Payload(PayloadError),
+        X509(X509Error),
+    }
+);
+error_model!(
+    #[derive(Debug, Clone)]
+    pub enum X509Error {
+        ParseError(String),
     }
 );
 error_model!(
@@ -33,6 +40,8 @@ error_model!(
         RootHasNoAuthority(String),
         ConfigNotSignedWithSubordinate(String),
         SubjectMismatch(String),
+        LeafNeedsAuthorityHints(String),
+        AuthorityHintsMustNotBeEmpty(String),
     }
 );
 

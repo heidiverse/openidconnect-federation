@@ -134,7 +134,6 @@ impl From<serde_json::Value> for Value {
             josekit::Value::Bool(b) => Value::Boolean(b),
             josekit::Value::Number(number) => {
                 if let Some(i64) = number.as_i64() {
-                    println!("Float: {}", number.is_f64());
                     Value::Integer(i64)
                 } else if let Some(f64) = number.as_f64() {
                     Value::Float(f64)
