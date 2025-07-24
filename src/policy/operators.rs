@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::RandomState,
+};
 
 use serde::{Deserialize, Serialize};
 use tracing::{instrument, warn};
@@ -184,6 +187,12 @@ impl PolicyOperator {
                     ))
                     .into());
                 };
+
+                // ahm naja, could be better...
+                let set: HashSet<Value> = HashSet::from_iter(self_array.clone().into_iter());
+                let set2 = HashSet::from_iter(other_array.into_iter());
+                let result = set.intersection(&set2).cloned().collect::<Vec<_>>();
+                *self_array = result;
             }
             PolicyOperator::SubsetOf(value) => todo!(),
             PolicyOperator::SupersetOf(value) => todo!(),
