@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Deref};
 
+use itertools::Itertools;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub trait Transformer {
@@ -7,17 +8,75 @@ pub trait Transformer {
     fn transform(self, transformer: &mut dyn Transformer) -> Result<(), String>;
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default, PartialEq, Clone, Debug, Copy)]
+pub struct Float(f64);
+impl Eq for Float {}
+impl std::hash::Hash for Float {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.to_bits().hash(state);
+    }
+}
+
+impl From<&Float> for f64 {
+    fn from(value: &Float) -> Self {
+        value.0
+    }
+}
+impl From<Float> for f64 {
+    fn from(value: Float) -> Self {
+        value.0
+    }
+}
+
+impl From<f64> for Float {
+    fn from(value: f64) -> Self {
+        Float(value)
+    }
+}
+impl From<&f64> for Float {
+    fn from(value: &f64) -> Self {
+        Float(*value)
+    }
+}
+impl AsRef<f64> for Float {
+    fn as_ref(&self) -> &f64 {
+        &self.0
+    }
+}
+impl Deref for Float {
+    type Target = f64;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Eq)]
 #[serde(untagged)]
 pub enum Value {
     String(String),
     Integer(i64),
     Boolean(bool),
-    Float(f64),
+    Float(Float),
     Array(Vec<Value>),
     Object(HashMap<String, Value>),
     #[serde(alias = "null")]
     Null,
+}
+impl std::hash::Hash for Value {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Value::String(s) => s.hash(state),
+            Value::Integer(i) => i.hash(state),
+            Value::Boolean(b) => b.hash(state),
+            Value::Float(f) => f.hash(state),
+            Value::Array(a) => a.hash(state),
+            Value::Object(o) => o.iter().sorted_by(|a, b| a.0.cmp(&b.0)).for_each(|tup| {
+                tup.hash(state);
+            }),
+            Value::Null => ().hash(state),
+        }
+    }
 }
 impl Value {
     pub fn get(&self, key: &str) -> Option<&Value> {
@@ -52,7 +111,13 @@ impl Value {
     }
     pub fn as_float(&self) -> Option<f64> {
         match self {
-            Value::Float(f) => Some(*f),
+            Value::Float(f) => Some(f.into()),
+            _ => None,
+        }
+    }
+    pub fn as_array_mut(&mut self) -> Option<&mut Vec<Value>> {
+        match self {
+            Value::Array(a) => Some(a),
             _ => None,
         }
     }
@@ -78,6 +143,12 @@ impl Value {
             _ => None,
         }
     }
+    pub fn as_object_mut(&mut self) -> Option<&mut HashMap<String, Value>> {
+        match self {
+            Value::Object(o) => Some(o),
+            _ => None,
+        }
+    }
     pub fn as_object(&self) -> Option<&HashMap<String, Value>> {
         match self {
             Value::Object(o) => Some(o),
@@ -98,7 +169,9 @@ impl From<Value> for serde_json::Value {
             Value::Null => serde_json::Value::Null,
             Value::Boolean(b) => serde_json::Value::Bool(b),
             Value::Integer(i) => serde_json::Value::Number(serde_json::Number::from(i)),
-            Value::Float(f) => serde_json::Value::Number(serde_json::Number::from_f64(f).unwrap()),
+            Value::Float(f) => {
+                serde_json::Value::Number(serde_json::Number::from_f64(f.into()).unwrap())
+            }
             Value::String(s) => serde_json::Value::String(s),
             Value::Array(a) => serde_json::Value::Array(a.into_iter().map(|v| v.into()).collect()),
             Value::Object(o) => {
@@ -114,7 +187,7 @@ impl From<Value> for Option<serde_json::Value> {
             Value::Boolean(b) => Some(serde_json::Value::Bool(b)),
             Value::Integer(i) => Some(serde_json::Value::Number(serde_json::Number::from(i))),
             Value::Float(f) => Some(serde_json::Value::Number(
-                serde_json::Number::from_f64(f).unwrap(),
+                serde_json::Number::from_f64(f.into()).unwrap(),
             )),
             Value::String(s) => Some(serde_json::Value::String(s)),
             Value::Array(a) => Some(serde_json::Value::Array(
@@ -136,7 +209,7 @@ impl From<serde_json::Value> for Value {
                 if let Some(i64) = number.as_i64() {
                     Value::Integer(i64)
                 } else if let Some(f64) = number.as_f64() {
-                    Value::Float(f64)
+                    Value::Float(f64.into())
                 } else {
                     Value::Null
                 }

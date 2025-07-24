@@ -8,6 +8,14 @@ crate::error_model!(
         Internet(InternetError),
         Payload(PayloadError),
         X509(X509Error),
+        Policy(PolicyError),
+    }
+);
+error_model!(
+    #[derive(Debug, Clone)]
+    pub enum PolicyError {
+        PolicyMergeError(String),
+        InvalidPolicyOperator(String),
     }
 );
 error_model!(

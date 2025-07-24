@@ -157,31 +157,13 @@ mod tests {
         let EntityConfig::Leaf(leaf) = trust_chain.leaf.entity_config.unwrap() else {
             panic!("Expected Leaf entity config");
         };
-
-        let jwks = leaf.payload_unverified().insecure().jwks();
+        let (_, ta) = trust_chain.trust_entities.iter().nth(0).unwrap();
+        let EntityConfig::TrustAnchor(ta_jwt) = ta.entity_config.clone().unwrap() else {
+            panic!("Expected TrustAnchor entity config");
+        };
         println!(
-            "jwk.kid: {:?}",
-            jwks.0.keys().first().unwrap().key_id().unwrap()
-        );
-        println!(
-            "jwk.kid: {:?}",
-            base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(
-                jwks.0
-                    .keys()
-                    .first()
-                    .unwrap()
-                    .x509_certificate_sha256_thumbprint()
-                    .unwrap()
-            )
-        );
-        println!(
-            "jwt.header.kid: {:?}",
-            leaf.header()
-                .unwrap()
-                .claim("kid")
-                .unwrap()
-                .as_str()
-                .unwrap()
+            "{:?}",
+            ta_jwt.verify_signature(&ta.entity_config.clone().unwrap().jwks())
         );
     }
 }
