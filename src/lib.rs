@@ -76,7 +76,7 @@ pub async fn fetch_jwt_async<
 
 #[cfg(test)]
 mod tests {
-    
+
     use tracing::{debug, level_filters::LevelFilter};
     use tracing_subscriber::{FmtSubscriber, fmt::format::FmtSpan};
 
@@ -154,16 +154,5 @@ mod tests {
         debug!(error = ?res, "[build_trust]");
         let res = trust_chain.verify();
         debug!(error = ?res, "[verify_trust]");
-        let EntityConfig::Leaf(leaf) = trust_chain.leaf.entity_config.unwrap() else {
-            panic!("Expected Leaf entity config");
-        };
-        let (_, ta) = trust_chain.trust_entities.iter().next().unwrap();
-        let EntityConfig::TrustAnchor(ta_jwt) = ta.entity_config.clone().unwrap() else {
-            panic!("Expected TrustAnchor entity config");
-        };
-        println!(
-            "{:?}",
-            ta_jwt.verify_signature(&ta.entity_config.clone().unwrap().jwks())
-        );
     }
 }

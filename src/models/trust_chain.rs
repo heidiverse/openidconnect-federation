@@ -93,9 +93,16 @@ impl<Config: FetchConfig> TrustChain<Config> {
         }
         let sub = self.leaf.entity_config.as_ref().unwrap();
         for sub_state in &self.leaf.subordinate_statement {
-            if let Err(e) = sub_state.verify_signature(&sub.jwks()) {
+            let inner = match sub {
+                EntityConfig::Leaf(jwt)
+                | EntityConfig::Intermediate(jwt)
+                | EntityConfig::TrustAnchor(jwt) => jwt,
+            };
+            if let Err(e) =
+                inner.verify_signature(&sub_state.payload_unverified().insecure().jwks())
+            {
                 errors.push(TrustChainError::ConfigNotSignedWithSubordinate(format!(
-                    "EntityConfigError <-> Subordinate: {e}"
+                    "[LEAF] EntityConfigError <-> Subordinate: {e}"
                 )));
             }
         }
