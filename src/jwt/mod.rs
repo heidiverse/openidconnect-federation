@@ -97,20 +97,20 @@ pub struct Signature {
 
 impl<T: Serialize + DeserializeOwned + Debug> Jwt<T> {
     pub fn header(&self) -> Result<Box<dyn JoseHeader>, FederationError> {
-        josekit::jwt::decode_header(&self.jwt_at(0))
+        josekit::jwt::decode_header(self.jwt_at(0))
             .map_err(|e| FederationError::Jws(JwsError::InvalidHeader(format!("{e}"))))
     }
     pub fn payload(&self, jwk_set: &JwkSet) -> Result<&T, FederationError> {
-        let _ = self.verify_signature(jwk_set)?;
+        self.verify_signature(jwk_set)?;
         Ok(&self.payload)
     }
     pub fn payload_with_verifier(&self, verifier: &dyn JwsVerifier) -> Result<&T, FederationError> {
-        let _ = self.verify_signature_with_verifier(verifier)?;
+        self.verify_signature_with_verifier(verifier)?;
         Ok(&self.payload)
     }
     #[instrument(skip(self, jwk_set), err)]
     pub fn verify_signature(&self, jwk_set: &JwkSet) -> Result<(), FederationError> {
-        let header = josekit::jwt::decode_header(&self.jwt_at(0))
+        let header = josekit::jwt::decode_header(self.jwt_at(0))
             .map_err(|e| FederationError::Jws(JwsError::InvalidHeader(format!("{e}"))))?;
         let Some(verifier) = jwk_set.verifier_for(header.claim("kid").unwrap().as_str().unwrap())
         else {
@@ -124,7 +124,7 @@ impl<T: Serialize + DeserializeOwned + Debug> Jwt<T> {
                 .map_err(|e| JwsError::EncodingError(format!("{e}")))?;
             println!("alg: {}", verifier.algorithm().name());
 
-            let _ = verifier
+            verifier
                 .verify(
                     format!("{}.{}", s.protected, self.original_payload).as_bytes(),
                     sig_bytes.as_slice(),
@@ -138,7 +138,7 @@ impl<T: Serialize + DeserializeOwned + Debug> Jwt<T> {
         &self,
         verifier: &dyn JwsVerifier,
     ) -> Result<(), FederationError> {
-        let header = josekit::jwt::decode_header(&self.jwt_at(0))
+        let header = josekit::jwt::decode_header(self.jwt_at(0))
             .map_err(|e| FederationError::Jws(JwsError::InvalidHeader(format!("{e}"))))?;
         if verifier.algorithm().name()
             != header
@@ -148,7 +148,7 @@ impl<T: Serialize + DeserializeOwned + Debug> Jwt<T> {
                 .algorithm()
                 .unwrap()
         {
-            return Err(JwsError::InvalidHeader(format!("algorithm not matching")).into());
+            return Err(JwsError::InvalidHeader("algorithm not matching".to_string()).into());
         }
         for s in &self.signatures {
             let sig_bytes = base64::prelude::BASE64_URL_SAFE_NO_PAD
@@ -156,7 +156,7 @@ impl<T: Serialize + DeserializeOwned + Debug> Jwt<T> {
                 .map_err(|e| JwsError::EncodingError(format!("{e}")))?;
             println!("alg: {}", verifier.algorithm().name());
 
-            let _ = verifier
+            verifier
                 .verify(
                     format!("{}.{}", s.protected, self.original_payload).as_bytes(),
                     sig_bytes.as_slice(),

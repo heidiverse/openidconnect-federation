@@ -94,7 +94,7 @@ macro_rules! operator_definitions {
                 $(
                     $(#[$($meta_var)*])*
                     #[serde(alias = $value)]
-                    $operator_name(crate::models::transformer::Value)
+                    $operator_name($crate::models::transformer::Value)
                 ),*,
                 #[serde(other)]
                 Unknown
@@ -126,7 +126,7 @@ macro_rules! operator_definitions {
                     )?
                     return number;
                 }
-                pub fn argument(&self) -> crate::models::transformer::Value {
+                pub fn argument(&self) -> $crate::models::transformer::Value {
                     match self {
                         $(PolicyOperator::$operator_name(value) => value.clone()),*,
                         Self::Unknown => models::transformer::Value::Null,
@@ -204,7 +204,7 @@ impl PolicyOperator {
                     )
                     .into());
                 };
-                if !vals.contains(&val) {
+                if !vals.contains(val) {
                     return Err(PolicyError::InvalidPolicyOperator(
                         "value not in one_of list".to_string(),
                     )
@@ -219,7 +219,7 @@ impl PolicyOperator {
                 *val = Value::Array(result.into_iter().cloned().collect());
             }
             PolicyOperator::SupersetOf(value) => {
-                if !a_is_superset_of_b(&val, &value)? {
+                if !a_is_superset_of_b(val, value)? {
                     return Err(PolicyError::InvalidPolicyOperator(
                         "value not in superset".to_string(),
                     )
@@ -241,7 +241,7 @@ impl PolicyOperator {
             }
             PolicyOperator::Unknown => {
                 // TODO: check crit claims in policy object
-                return Err(PolicyError::InvalidPolicyOperator(format!("unknown operator")).into());
+                return Err(PolicyError::InvalidPolicyOperator("unknown operator".to_string()).into());
             }
         }
         Ok(())
@@ -257,7 +257,7 @@ impl PolicyOperator {
             }
             PolicyOperator::Default(_) => {}
             PolicyOperator::OneOf(value) => {
-                let intersection: Vec<Value> = intersect_values(&value, &other.argument())?
+                let intersection: Vec<Value> = intersect_values(value, &other.argument())?
                     .into_iter()
                     .cloned()
                     .collect();
@@ -272,14 +272,14 @@ impl PolicyOperator {
                 *value = Value::Array(intersection);
             }
             PolicyOperator::SubsetOf(value) => {
-                let intersection: Vec<Value> = intersect_values(&value, &other.argument())?
+                let intersection: Vec<Value> = intersect_values(value, &other.argument())?
                     .into_iter()
                     .cloned()
                     .collect();
                 *value = Value::Array(intersection);
             }
             PolicyOperator::SupersetOf(value) => {
-                let intersection: Vec<Value> = union_values(&value, &other.argument())?
+                let intersection: Vec<Value> = union_values(value, &other.argument())?
                     .into_iter()
                     .cloned()
                     .collect();
@@ -508,7 +508,7 @@ mod tests {
                 }
             }
         }
-        for (right_key, _) in right_object {
+        for right_key in right_object.keys() {
             if !left_object.contains_key(right_key) {
                 differences.push((&Value::Null, right_object.get(right_key).unwrap()));
             }

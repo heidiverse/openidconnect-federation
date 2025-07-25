@@ -48,11 +48,10 @@ impl Entity {
             .authority_hints()
             .unwrap_or(vec![])
         {
-            if self
+            if !self
                 .subordinate_statement
                 .iter()
-                .find(|stmt| stmt.payload_unverified().insecure().iss() == hint.as_str())
-                .is_none()
+                .any(|stmt| stmt.payload_unverified().insecure().iss() == hint.as_str())
             {
                 let ec = leaf_ec.fetch_authority(&hint)?;
                 let subordinate = ec.fetch_subordinate(&leaf_ec.sub())?;
@@ -107,9 +106,9 @@ impl<Config: FetchConfig> TrustChain<Config> {
             .is_none()
             && !matches!(sub, EntityConfig::TrustAnchor(_))
         {
-            errors.push(TrustChainError::LeafNeedsAuthorityHints(format!(
-                "EntityConfigError: Missing authority hints"
-            )));
+            errors.push(TrustChainError::LeafNeedsAuthorityHints(
+                "EntityConfigError: Missing authority hints".to_string(),
+            ));
         }
         let authority_hints = sub
             .payload_unverified()
@@ -117,14 +116,14 @@ impl<Config: FetchConfig> TrustChain<Config> {
             .authority_hints()
             .unwrap_or_default();
         if authority_hints.is_empty() {
-            errors.push(TrustChainError::AuthorityHintsMustNotBeEmpty(format!(
-                "EntityConfigError: Authority hints must not be empty"
-            )));
+            errors.push(TrustChainError::AuthorityHintsMustNotBeEmpty(
+                "EntityConfigError: Authority hints must not be empty".to_string(),
+            ));
         }
         if self.leaf.subordinate_statement.is_empty() {
-            errors.push(TrustChainError::BrokenChain(format!(
-                "No authority found for leaf"
-            )))
+            errors.push(TrustChainError::BrokenChain(
+                "No authority found for leaf".to_string(),
+            ))
         }
         // check each trust entry
         for (sub, statement) in &self.trust_entities {
@@ -222,16 +221,12 @@ impl<Config: FetchConfig> TrustChain<Config> {
         })
     }
     #[instrument(skip(chain))]
-    pub fn from_trust_chain(chain: &Vec<String>) -> Option<Self> {
-        let Some(leaf) = chain.first() else {
-            return None;
-        };
+    pub fn from_trust_chain(chain: &[String]) -> Option<Self> {
+        let leaf = chain.first()?;
         let Ok(leaf) = leaf.parse::<Jwt<EntityStatement>>() else {
             return None;
         };
-        let Some(root) = chain.last() else {
-            return None;
-        };
+        let root = chain.last()?;
         let Ok(root) = root.parse::<Jwt<EntityStatement>>() else {
             return None;
         };

@@ -149,25 +149,19 @@ impl EntityConfig {
         Ok(())
     }
     pub fn new_leaf(entity_statement: Jwt<EntityStatement>) -> Option<Self> {
-        if entity_statement
+        entity_statement
             .payload_unverified()
             .insecure()
             .authority_hints
-            .is_none()
-        {
-            return None;
-        }
+            .as_ref()?;
         Some(EntityConfig::Leaf(entity_statement))
     }
     pub fn new_intermediate(entity_statement: Jwt<EntityStatement>) -> Option<Self> {
-        if entity_statement
+        entity_statement
             .payload_unverified()
             .insecure()
             .authority_hints
-            .is_none()
-        {
-            return None;
-        }
+            .as_ref()?;
         Some(EntityConfig::Intermediate(entity_statement))
     }
     pub fn new_trust_anchor(entity_statement: Jwt<EntityStatement>) -> Option<Self> {
@@ -296,7 +290,7 @@ macro_rules! models {
                     _ => self.additional_fields.get(name).unwrap_or(&serde_json::Value ::Null).to_owned()
                 }
             }
-            pub fn to_transformer(&self, transformer: &mut dyn crate::models::transformer::Transformer) {
+            pub fn to_transformer(&self, transformer: &mut dyn $crate::models::transformer::Transformer) {
                 $(
                     let v = serde_json::to_value(&self.$field).unwrap_or(serde_json::Value ::Null);
                     transformer.set_field(stringify!($field), v.into());
@@ -306,8 +300,8 @@ macro_rules! models {
                 }
             }
         }
-        impl crate::models::transformer::Transformer for $name {
-            fn set_field(&mut self, name: &str, value: crate::models::transformer::Value) {
+        impl $crate::models::transformer::Transformer for $name {
+            fn set_field(&mut self, name: &str, value: $crate::models::transformer::Value) {
                 match name {
                     $(stringify!($field) => {
                         self.$field = serde_json::from_value(value.into()).unwrap();
@@ -315,7 +309,7 @@ macro_rules! models {
                     _ =>  { self.additional_fields.insert(name.to_string(), value.into()); }
                 }
             }
-            fn transform(self, transformer: &mut dyn crate::models::transformer::Transformer) -> Result<(), String> {
+            fn transform(self, transformer: &mut dyn $crate::models::transformer::Transformer) -> Result<(), String> {
                 self.to_transformer(transformer);
                 Ok(())
             }

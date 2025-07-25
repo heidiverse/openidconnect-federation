@@ -71,7 +71,7 @@ impl std::hash::Hash for Value {
             Value::Boolean(b) => b.hash(state),
             Value::Float(f) => f.hash(state),
             Value::Array(a) => a.hash(state),
-            Value::Object(o) => o.iter().sorted_by(|a, b| a.0.cmp(&b.0)).for_each(|tup| {
+            Value::Object(o) => o.iter().sorted_by(|a, b| a.0.cmp(b.0)).for_each(|tup| {
                 tup.hash(state);
             }),
             Value::Null => {}
@@ -127,7 +127,7 @@ impl Value {
             _ => None,
         }
     }
-    pub fn into_typed_array<'de, T: Serialize + DeserializeOwned>(&'de self) -> Option<Vec<T>> {
+    pub fn into_typed_array<T: Serialize + DeserializeOwned>(&self) -> Option<Vec<T>> {
         match self {
             Value::Array(a) => {
                 let mut result = Vec::new();
@@ -227,11 +227,8 @@ impl From<serde_json::Value> for Value {
 
 impl Transformer for Value {
     fn set_field(&mut self, name: &str, value: Value) {
-        match self {
-            Value::Object(map) => {
-                map.insert(name.to_string(), value);
-            }
-            _ => {}
+        if let Value::Object(map) = self {
+            map.insert(name.to_string(), value);
         }
     }
 
@@ -242,6 +239,6 @@ impl Transformer for Value {
             }
             return Ok(());
         }
-        return Err("Only available for objects".to_string());
+        Err("Only available for objects".to_string())
     }
 }
