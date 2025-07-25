@@ -74,7 +74,7 @@ impl std::hash::Hash for Value {
             Value::Object(o) => o.iter().sorted_by(|a, b| a.0.cmp(&b.0)).for_each(|tup| {
                 tup.hash(state);
             }),
-            Value::Null => ().hash(state),
+            Value::Null => {}
         }
     }
 }

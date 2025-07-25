@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 
-use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use tracing::{instrument, warn};
 
@@ -68,7 +67,7 @@ crate::operator_definitions!(
         ,
         Add(Value::Array(..)) = "add"
             => [Add, Value |subset|, Default, SubsetOf|subset|, SupersetOf, Essential],
-        Default(any) = "default"
+        Default(_any) = "default"
             => [Default|is_same|, Value|other_not_null|, Add, OneOf, SubsetOf, SupersetOf, Essential],
         OneOf(Value::String(..)) = "one_of"
             => [OneOf, Value|contains|, Default, Essential],
@@ -142,7 +141,7 @@ macro_rules! operator_definitions {
                 pub fn can_be_combined_with(&self, other: &[PolicyOperator]) -> bool {
                     match self {
                         $(
-                            PolicyOperator::$operator_name(base) => {
+                            PolicyOperator::$operator_name(_) => {
                                 false $( || other.iter().all(|o| match o {
                                         $(
                                             PolicyOperator::$allowed_operator(..) $(if $($fname(self, o))&&*)? => true,
@@ -435,17 +434,12 @@ impl Policy {
 
 #[cfg(test)]
 mod tests {
-
-    use josekit::jws::alg::rsassa::RsassaJwsAlgorithm::Rs256;
     use tracing::level_filters::LevelFilter;
     use tracing_subscriber::{FmtSubscriber, fmt::format::FmtSpan};
 
     use crate::{
         models::transformer::Value,
-        policy::{
-            self,
-            operators::{Policy, PolicyOperator},
-        },
+        policy::operators::{Policy, PolicyOperator},
     };
 
     #[test]
