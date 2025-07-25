@@ -16,6 +16,7 @@ error_model!(
     pub enum PolicyError {
         PolicyMergeError(String),
         InvalidPolicyOperator(String),
+        MetadataMustBeObject(String),
     }
 );
 error_model!(

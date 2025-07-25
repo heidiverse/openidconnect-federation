@@ -1,0 +1,16 @@
+{
+  "contacts": {
+    "add": ["ops@swamid.se"]
+  },
+  "organization_name": {
+    "value": "University of Umeå"
+  },
+  "subject_types_supported": {
+    "value": ["pairwise"]
+  },
+  "token_endpoint_auth_methods_supported": {
+    "default": ["private_key_jwt"],
+    "subset_of": ["private_key_jwt", "client_secret_jwt"],
+    "superset_of": ["private_key_jwt"]
+  }
+}
