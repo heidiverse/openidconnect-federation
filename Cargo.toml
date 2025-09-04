@@ -12,7 +12,7 @@ josekit = { git = "https://github.com/ubamrein/josekit-rs.git", default-features
 paste = "1.0.15"
 anyhow = "1.0.98"
 base64 = "0.22.1"
-reqwest = { version = "0.12.22", features = ["blocking"] }
+reqwest = { version = "0.11", default-features = false, features = ["blocking", "rustls-tls"] }
 urlencoding = "2.1"
 tracing = "0.1.41"
 x509-cert = "0.2.5"
