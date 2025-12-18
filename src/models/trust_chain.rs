@@ -16,7 +16,7 @@ limitations under the License.
 
 use std::{collections::HashMap, marker::PhantomData};
 
-use heidi_jwt::jwt::Jwt;
+use heidi_jwt::{JwkSet, jwt::Jwt};
 use petgraph::prelude::DiGraphMap;
 use sha2::{Digest, Sha256};
 use tracing::{error, instrument};
@@ -51,8 +51,37 @@ impl Entity {
         &mut self,
         trust_entities: &mut HashMap<String, Entity>,
         trust_anchors: &mut Vec<String>,
-        trust_graph: &mut DiGraphMap<[u8; 32], (EntityConfig, EntityStatement)>,
+        trust_graph: &mut DiGraphMap<[u8; 32], EntityStatement>,
     ) -> Result<(), FederationError> {
+        // If we have no entity config, we should already have all trust entities. Hence we can do
+        // the graph building offline.
+        if self.entity_config.is_none() {
+            for subordinate_statement in &self.subordinate_statement {
+                let iss_hash: [u8; 32] =
+                    Sha256::digest(&subordinate_statement.payload_unverified().insecure().iss)
+                        .into();
+                let sub_hash: [u8; 32] =
+                    Sha256::digest(&subordinate_statement.payload_unverified().insecure().sub)
+                        .into();
+                trust_graph.add_edge(
+                    iss_hash,
+                    sub_hash,
+                    subordinate_statement
+                        .payload_unverified()
+                        .insecure()
+                        .clone(),
+                );
+                let mut old_entities = trust_entities.clone();
+                if let Some(iss) = trust_entities
+                    .get_mut(&subordinate_statement.payload_unverified().insecure().iss)
+                {
+                    iss.complete_trust(&mut old_entities, trust_anchors, trust_graph)?;
+                }
+                *trust_entities = old_entities;
+            }
+            return Ok(());
+        }
+
         let Some(leaf_ec) = self.entity_config.as_ref() else {
             return Err(TrustChainError::InvalidEntityConfig(
                 "Leaf entity config not found".to_string(),
@@ -64,6 +93,25 @@ impl Entity {
             error!("Leaf entity config verification failed");
         }
         let leaf_sub_hash: [u8; 32] = Sha256::digest(leaf_ec.sub()).into();
+        trust_graph.add_edge(
+            leaf_sub_hash,
+            leaf_sub_hash,
+            leaf_ec.payload_unverified().insecure().clone(),
+        );
+
+        let is_trust_anchor = leaf_ec
+            .payload_unverified()
+            .insecure()
+            .authority_hints
+            .is_none();
+        println!(
+            "{} : {:?}",
+            leaf_ec.payload_unverified().insecure().iss,
+            leaf_ec.payload_unverified().insecure().authority_hints
+        );
+        if is_trust_anchor {
+            trust_anchors.push(leaf_ec.payload_unverified().insecure().iss.to_string());
+        }
 
         // check if we have all sub statements from the authorities
         for hint in leaf_ec
@@ -72,33 +120,55 @@ impl Entity {
             .authority_hints()
             .unwrap_or(vec![])
         {
-            if !self
+            if let Some(subordinate_statement) = self
                 .subordinate_statement
                 .iter()
-                .any(|stmt| stmt.payload_unverified().insecure().iss() == hint.as_str())
+                .find(|stmt| stmt.payload_unverified().insecure().iss() == hint.as_str())
             {
+                let iss_hash: [u8; 32] =
+                    Sha256::digest(&subordinate_statement.payload_unverified().insecure().iss)
+                        .into();
+                trust_graph.add_edge(
+                    iss_hash,
+                    leaf_sub_hash,
+                    subordinate_statement
+                        .payload_unverified()
+                        .insecure()
+                        .clone(),
+                );
+                let mut old_entities = trust_entities.clone();
+                if let Some(iss) = trust_entities
+                    .get_mut(&subordinate_statement.payload_unverified().insecure().iss)
+                {
+                    iss.complete_trust(&mut old_entities, trust_anchors, trust_graph)?;
+                }
+                *trust_entities = old_entities;
+            } else {
                 let ec = leaf_ec.fetch_authority(&hint)?;
                 let subordinate = ec.fetch_subordinate(&leaf_ec.sub())?;
                 self.subordinate_statement.push(subordinate.clone());
-                let mut old_entities = trust_entities.clone();
+                //TODO: is there a better way to handle the self referential issue of entity and completing trust?
                 let entry = trust_entities.entry(ec.sub()).or_insert(Entity {
                     entity_config: None,
                     subordinate_statement: vec![],
                 });
+
                 if matches!(ec, EntityConfig::TrustAnchor(_)) {
                     trust_anchors.push(ec.sub());
                 }
-                let sub_hash: [u8; 32] = Sha256::digest(ec.sub()).into();
+                entry.entity_config = Some(ec.clone());
+                let mut old_entities = trust_entities.clone();
 
+                let entry = trust_entities
+                    .get_mut(&ec.sub())
+                    .expect("We just inserted it");
+                let sub_hash = Sha256::digest(ec.sub()).into();
                 trust_graph.add_edge(
                     sub_hash,
                     leaf_sub_hash,
-                    (
-                        ec.clone(),
-                        subordinate.payload_unverified().insecure().clone(),
-                    ),
+                    subordinate.payload_unverified().insecure().clone(),
                 );
-                entry.entity_config = Some(ec);
+
                 let _ = entry.complete_trust(&mut old_entities, trust_anchors, trust_graph);
                 *trust_entities = old_entities;
             }
@@ -123,10 +193,20 @@ impl Entity {
 }
 
 impl<Config: FetchConfig> TrustChain<Config> {
+    pub fn find_closest_root() -> Result<Entity, FederationError> {
+        todo! {}
+    }
+
     pub fn verify(&self) -> Result<(), Vec<FederationError>> {
         // leaf needs entity config
         let mut errors = vec![];
-        if let Err(e) = self.leaf.entity_config.as_ref().unwrap().verify() {
+        let Some(ec) = self.leaf.entity_config.as_ref() else {
+            errors.push(TrustChainError::InvalidEntityConfig(
+                "EntityConfig is missing".to_string(),
+            ));
+            return Err(errors.into_iter().map(|a| a.into()).collect::<Vec<_>>());
+        };
+        if let Err(e) = ec.verify() {
             errors.push(TrustChainError::InvalidEntityConfig(format!(
                 "EntityConfigError: {e}"
             )));
@@ -222,24 +302,41 @@ impl<Config: FetchConfig> TrustChain<Config> {
                         )));
                     }
                 } else {
-                    // if we don't have an entity config, check for the subordinate statement
-                    let issuer_statement =
-                        issuer.subordinate_statement.iter().find(|iss_sub_state| {
-                            iss_sub_state.payload_unverified().insecure().sub()
-                                == sub_state.payload_unverified().insecure().sub()
-                        });
-                    if let Some(issuer_statement) = issuer_statement {
-                        if let Err(e) = sub_state.verify_signature(
-                            &issuer_statement.payload_unverified().insecure().jwks(),
-                        ) {
+                    // if we don't have an entity config, we need to check, if there are subordinate statements
+                    // that have been issued for `iss`. If so, we need to collect all keys into one set, as the different
+                    // subordinate statements may have different key material.
+                    let sub_ordinate_keys = issuer
+                        .subordinate_statement
+                        .iter()
+                        .map(|sub_st| {
+                            sub_st
+                                .payload_unverified()
+                                .insecure()
+                                .jwks()
+                                .0
+                                .keys()
+                                .into_iter()
+                                .cloned()
+                                .collect::<Vec<_>>()
+                        })
+                        .flatten()
+                        .collect::<Vec<_>>();
+                    let mut jwk_set = JwkSet::new();
+                    for key in sub_ordinate_keys {
+                        jwk_set.push_key(key);
+                    }
+                    if jwk_set.keys().is_empty() {
+                        errors.push(TrustChainError::BrokenChain(format!(
+                            "Error in issuer statement [{iss}] -> missing issuer statement"
+                        )));
+                    } else {
+                        if let Err(e) =
+                            sub_state.verify_signature(&heidi_jwt::models::JwkSet(jwk_set))
+                        {
                             errors.push(TrustChainError::ConfigNotSignedWithSubordinate(format!(
                                 "Error in issuer statement [{iss}] -> {e}"
                             )));
                         }
-                    } else {
-                        errors.push(TrustChainError::BrokenChain(format!(
-                            "Error in issuer statement [{iss}] -> missing issuer statement"
-                        )));
                     }
                 }
             }
@@ -274,7 +371,6 @@ impl<Config: FetchConfig> TrustChain<Config> {
     #[instrument(skip(chain))]
     pub fn from_trust_chain(chain: &[String]) -> Option<Self> {
         let leaf = chain.first()?;
-        let mut trust_graph = DiGraphMap::new();
         let Ok(leaf) = leaf.parse::<Jwt<EntityStatement>>() else {
             return None;
         };
@@ -286,12 +382,7 @@ impl<Config: FetchConfig> TrustChain<Config> {
             entity_config: Some(EntityConfig::Leaf(leaf.clone())),
             subordinate_statement: vec![],
         };
-        let leaf_sub: [u8; 32] = Sha256::digest(leaf.payload_unverified().insecure().sub()).into();
-
         let mut trust_entities = HashMap::new();
-        println!("Leaf Sub: {}", leaf.payload_unverified().insecure().sub());
-        println!("Leaf Iss: {}", leaf.payload_unverified().insecure().iss());
-        let mut last_sub: [u8; 32] = [0; 32];
         for (i, jwt) in chain
             .iter()
             .skip(1)
@@ -301,21 +392,9 @@ impl<Config: FetchConfig> TrustChain<Config> {
             let Ok(intermediate) = jwt.parse::<Jwt<EntityStatement>>() else {
                 return None;
             };
-            println!("{}", intermediate.payload_unverified().insecure().sub());
-            let sub = Sha256::digest(intermediate.payload_unverified().insecure().sub()).into();
             if i == 0 {
-                trust_graph.add_edge(
-                    sub,
-                    leaf_sub,
-                    intermediate.payload_unverified().insecure().clone(),
-                );
                 leaf_entity.subordinate_statement = vec![intermediate.clone()];
             } else {
-                trust_graph.add_edge(
-                    sub,
-                    last_sub,
-                    intermediate.payload_unverified().insecure().clone(),
-                );
                 trust_entities.insert(
                     intermediate.payload_unverified().insecure().sub(),
                     Entity {
@@ -324,16 +403,7 @@ impl<Config: FetchConfig> TrustChain<Config> {
                     },
                 );
             }
-
-            last_sub = sub;
         }
-        let trust_anchors = vec![root.payload_unverified().insecure().sub()];
-        let root_sub = Sha256::digest(root.payload_unverified().insecure().sub()).into();
-        trust_graph.add_edge(
-            root_sub,
-            last_sub,
-            root.payload_unverified().insecure().clone(),
-        );
         trust_entities.insert(
             root.payload_unverified().insecure().sub(),
             Entity {
@@ -344,9 +414,9 @@ impl<Config: FetchConfig> TrustChain<Config> {
 
         Some(Self {
             leaf: leaf_entity,
-            trust_anchors,
+            trust_anchors: vec![],
             trust_entities,
-            trust_graph,
+            trust_graph: DiGraphMap::new(),
             phantom: PhantomData,
         })
     }
@@ -359,7 +429,8 @@ impl<Config: FetchConfig> TrustChain<Config> {
             &mut trust_anchors,
             &mut trust_graph,
         )?;
-
+        self.trust_anchors = trust_anchors;
+        self.trust_graph = trust_graph;
         Ok(())
     }
     #[instrument(skip(self))]

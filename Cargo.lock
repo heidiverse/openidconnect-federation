@@ -835,7 +835,7 @@ checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 [[package]]
 name = "heidi-jwt"
 version = "0.1.2"
-source = "git+https://github.com/heidiverse/heidi-jwt#672acfe68db662aa510e69675da08b05196648c2"
+source = "git+https://github.com/heidiverse/heidi-jwt#0aefa292046e23ad69aeeae67f4f5b8880a1e2b7"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1317,6 +1317,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tracing",
  "tracing-subscriber",
  "urlencoding",

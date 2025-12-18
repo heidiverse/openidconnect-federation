@@ -92,12 +92,19 @@ mod tests {
 
     use std::hash::RandomState;
 
-    use heidi_jwt::jwt::{Jwt, creator::JwtCreator};
+    use heidi_jwt::{
+        Jwk, JwsHeader, JwsSigner,
+        chrono::Duration,
+        jwt::{
+            Jwt,
+            creator::{JwtCreator, Signer},
+        },
+    };
     use petgraph::{
         algo::{all_simple_paths, astar, dijkstra},
         visit::Visitable,
     };
-    use serde_json::json;
+    use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
     use tracing::{debug, level_filters::LevelFilter};
     use tracing_subscriber::{FmtSubscriber, fmt::format::FmtSpan};
@@ -228,17 +235,148 @@ mod tests {
 
     #[test]
     fn create_statements() {
+        // let subscriber = FmtSubscriber::builder()
+        //     .with_line_number(true)
+        //     .with_max_level(LevelFilter::INFO)
+        //     .with_span_events(FmtSpan::ENTER | FmtSpan::CLOSE)
+        //     .pretty()
+        //     .finish();
+        // let _ = tracing::subscriber::set_global_default(subscriber);
         let root_key = heidi_jwt::ES256.generate_key_pair().unwrap();
-        let public_key = root_key.to_jwk_public_key();
-        let root = json!({
-            "sub" : "https://trust-anchor.example.com",
-            "iss" : "https://trust-anchor.example.com",
+        let root_jwk = root_key.to_jwk_key_pair();
+        println!("create ec");
+        let (root_jwt, root_signer) =
+            create_ec("root", &Value::Null, &Value::Null, &root_jwk, &Value::Null);
+        println!("create intermediate2");
+        let (intermediate2_jwt, intermediate2_key) = create_statement(
+            "root",
+            "intermediate2",
+            &Value::Null,
+            &Value::Null,
+            &root_signer,
+        );
+        let intermediate2_signer = heidi_jwt::ES256
+            .signer_from_jwk(&intermediate2_key)
+            .unwrap();
+        let (intermediate1_jwt, intermediate1_key) = create_statement(
+            "intermediate2",
+            "intermediate1",
+            &Value::Null,
+            &Value::Null,
+            &intermediate2_signer,
+        );
+        let intermediate1_signer = heidi_jwt::ES256
+            .signer_from_jwk(&intermediate1_key)
+            .unwrap();
+        let (leaf_sub, leaf_key) = create_statement(
+            "intermediate1",
+            "leaf",
+            &Value::Null,
+            &Value::Null,
+            &intermediate1_signer,
+        );
+        let (leaf_ec, _) = create_ec(
+            "leaf",
+            &Value::Null,
+            &Value::Null,
+            &leaf_key,
+            &json!(["intermediate1"]),
+        );
+
+        let chain = vec![
+            leaf_ec,
+            leaf_sub,
+            intermediate1_jwt,
+            intermediate2_jwt,
+            root_jwt,
+        ];
+        println!("{}", serde_json::to_string(&chain).unwrap());
+        let mut trust_chain = DefaultTrustChain::from_trust_chain(&chain).unwrap();
+        println!("{:?}", trust_chain.trust_entities);
+        trust_chain.build_trust().unwrap();
+        trust_chain.verify().unwrap();
+        println!("{:?}", trust_chain.trust_anchors);
+        let first_anchor = Sha256::digest(trust_chain.trust_anchors.first().unwrap()).into();
+        let leaf: [u8; 32] =
+            Sha256::digest(trust_chain.leaf.entity_config.as_ref().unwrap().sub()).into();
+
+        let paths = astar(
+            &trust_chain.trust_graph,
+            first_anchor,
+            |e| e == leaf,
+            |_| 1,
+            |_| 0,
+        )
+        .unwrap();
+        for e in paths.1.windows(2) {
+            let edge = &trust_chain.trust_graph[(e[0], e[1])];
+            println!("{:?}", edge.sub());
+        }
+    }
+
+    fn create_ec(
+        iss: &str,
+        metadata: &Value,
+        metadata_policy: &Value,
+        root_key: &Jwk,
+        authority_hints: &Value,
+    ) -> (String, impl JwsSigner) {
+        let mut public_key = root_key.to_public_key().unwrap();
+        public_key.set_key_id(format!("{}", iss));
+        let mut root = json!({
+            "sub" : iss,
             "jwks" : {
                 "keys" : [
                     public_key
                 ]
-            }
+            },
+            "metadata" : metadata,
+            "metadata_policy" : metadata_policy
         });
-        // root.create_jwt(header, issuer, lifetime, signer)
+        if authority_hints != &Value::Null {
+            root["authority_hints"] = authority_hints.clone();
+        }
+        let mut jws_header = JwsHeader::new();
+        jws_header.set_algorithm(heidi_jwt::ES256.name());
+        jws_header.set_token_type("entity-statement+jwt");
+        jws_header.set_key_id(public_key.key_id().unwrap());
+        let new_signer = heidi_jwt::ES256.signer_from_jwk(&root_key).unwrap();
+
+        return (
+            root.create_jwt(&jws_header, Some(iss), Duration::minutes(2), &new_signer)
+                .unwrap(),
+            new_signer,
+        );
+    }
+    fn create_statement(
+        iss: &str,
+        sub: &str,
+        metadata: &Value,
+        metadata_policy: &Value,
+        signer: &dyn Signer,
+    ) -> (String, Jwk) {
+        let root_key = heidi_jwt::ES256.generate_key_pair().unwrap();
+        let mut public_key = root_key.to_jwk_public_key();
+        public_key.set_key_id(format!("{}", sub));
+        let root = json!({
+            "sub" : sub,
+            "jwks" : {
+                "keys" : [
+                    public_key
+                ]
+            },
+            "metadata" : metadata,
+            "metadata_policy" : metadata_policy
+        });
+        let mut jws_header = JwsHeader::new();
+        jws_header.set_algorithm(heidi_jwt::ES256.name());
+        jws_header.set_token_type("entity-statement+jwt");
+        jws_header.set_key_id(iss);
+
+        return (
+            root.create_jwt(&jws_header, Some(iss), Duration::minutes(2), signer)
+                .unwrap(),
+            root_key.to_jwk_key_pair(),
+        );
     }
 }
