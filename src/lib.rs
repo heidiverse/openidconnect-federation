@@ -247,6 +247,17 @@ mod tests {
         println!("create ec");
         let (root_jwt, root_signer) =
             create_ec("root", &Value::Null, &Value::Null, &root_jwk, &Value::Null);
+
+        let root2_key = heidi_jwt::ES256.generate_key_pair().unwrap();
+        let root2_jwk = root2_key.to_jwk_key_pair();
+        println!("create ec");
+        let (root2_jwt, root2_signer) = create_ec(
+            "root2",
+            &Value::Null,
+            &Value::Null,
+            &root2_jwk,
+            &Value::Null,
+        );
         println!("create intermediate2");
         let (intermediate2_jwt, intermediate2_key) = create_statement(
             "root",
@@ -258,6 +269,8 @@ mod tests {
         let intermediate2_signer = heidi_jwt::ES256
             .signer_from_jwk(&intermediate2_key)
             .unwrap();
+
+        // let mitm_signer = heidi_jwt::ES256.signer_from_jwk(&mitm_key).unwrap();
         let (intermediate1_jwt, intermediate1_key) = create_statement(
             "intermediate2",
             "intermediate1",
@@ -265,6 +278,16 @@ mod tests {
             &Value::Null,
             &intermediate2_signer,
         );
+
+        let (intermediate_cs, _) = create_cross_signed(
+            "root2",
+            "intermediate1",
+            &Value::Null,
+            &Value::Null,
+            &root2_signer,
+            &intermediate1_key,
+        );
+
         let intermediate1_signer = heidi_jwt::ES256
             .signer_from_jwk(&intermediate1_key)
             .unwrap();
@@ -275,6 +298,7 @@ mod tests {
             &Value::Null,
             &intermediate1_signer,
         );
+
         let (leaf_ec, _) = create_ec(
             "leaf",
             &Value::Null,
@@ -287,8 +311,10 @@ mod tests {
             leaf_ec,
             leaf_sub,
             intermediate1_jwt,
+            intermediate_cs,
             intermediate2_jwt,
             root_jwt,
+            root2_jwt,
         ];
 
         let mut trust_chain = DefaultTrustChain::from_trust_cache(&chain).unwrap();
@@ -296,13 +322,12 @@ mod tests {
         trust_chain.build_trust().unwrap();
         trust_chain.verify().unwrap();
 
-        let first_anchor: [u8; 32] =
-            Sha256::digest(trust_chain.trust_anchors.first().unwrap()).into();
-        let im2: [u8; 32] = Sha256::digest("intermediate2").into();
-        let leaf: [u8; 32] =
-            Sha256::digest(trust_chain.leaf.entity_config.as_ref().unwrap().sub()).into();
+        let first_anchor: [u8; 32] = Sha256::digest("root2").into();
+        let second_anchor: [u8; 32] = Sha256::digest("root").into();
 
-        let paths = trust_chain.find_shortest_trust_chain(None).unwrap();
+        let paths = trust_chain
+            .find_shortest_trust_chain(Some(&[second_anchor]))
+            .unwrap();
         println!("Best path found:");
         for e in paths.windows(2) {
             let edge = &trust_chain.trust_graph[(e[1], e[0])];
@@ -375,6 +400,37 @@ mod tests {
             root.create_jwt(&jws_header, Some(iss), Duration::minutes(2), signer)
                 .unwrap(),
             root_key.to_jwk_key_pair(),
+        );
+    }
+    fn create_cross_signed(
+        iss: &str,
+        sub: &str,
+        metadata: &Value,
+        metadata_policy: &Value,
+        signer: &dyn Signer,
+        key: &Jwk,
+    ) -> (String, Jwk) {
+        let mut public_key = key.to_public_key().unwrap();
+        public_key.set_key_id(format!("{}", sub));
+        let root = json!({
+            "sub" : sub,
+            "jwks" : {
+                "keys" : [
+                    public_key
+                ]
+            },
+            "metadata" : metadata,
+            "metadata_policy" : metadata_policy
+        });
+        let mut jws_header = JwsHeader::new();
+        jws_header.set_algorithm(heidi_jwt::ES256.name());
+        jws_header.set_token_type("entity-statement+jwt");
+        jws_header.set_key_id(iss);
+
+        return (
+            root.create_jwt(&jws_header, Some(iss), Duration::minutes(2), signer)
+                .unwrap(),
+            key.clone(),
         );
     }
 }
