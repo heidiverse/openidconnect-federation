@@ -14,10 +14,17 @@ limitations under the License.
 
 */
 
-use std::{collections::HashMap, marker::PhantomData};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    marker::PhantomData,
+};
 
 use heidi_jwt::{JwkSet, jwt::Jwt};
-use petgraph::prelude::DiGraphMap;
+use petgraph::{
+    data::DataMap,
+    prelude::DiGraphMap,
+    visit::{Bfs, IntoNeighborsDirected, Reversed},
+};
 use sha2::{Digest, Sha256};
 use tracing::{error, instrument};
 
@@ -193,8 +200,47 @@ impl Entity {
 }
 
 impl<Config: FetchConfig> TrustChain<Config> {
-    pub fn find_closest_root() -> Result<Entity, FederationError> {
-        todo! {}
+    pub fn find_best_root(
+        &self,
+        trust_anchors: &[[u8; 32]],
+    ) -> Result<Vec<[u8; 32]>, FederationError> {
+        let Some(ec) = self.leaf.entity_config.as_ref() else {
+            return Err(FederationError::TrustChain(
+                TrustChainError::InvalidEntityConfig(format!("leaf needs EC")),
+            ));
+        };
+        let start_hash: [u8; 32] = Sha256::digest(&ec.sub()).into();
+        let reversed_graph = Reversed(&self.trust_graph);
+
+        let mut queue = VecDeque::new();
+        queue.push_front(start_hash);
+        let mut visited = HashSet::new();
+        let mut parent: HashMap<[u8; 32], [u8; 32]> = HashMap::new();
+
+        while let Some(current) = queue.pop_front() {
+            if trust_anchors.contains(&current) {
+                let mut path = vec![current];
+                let mut node = current;
+                while let Some(parent_hash) = parent.get(&node) {
+                    path.push(*parent_hash);
+                    node = *parent_hash;
+                }
+                path.reverse();
+                return Ok(path);
+            }
+            for neighbor in
+                reversed_graph.neighbors_directed(current, petgraph::Direction::Outgoing)
+            {
+                if visited.insert(neighbor) {
+                    parent.insert(neighbor, current);
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+
+        Err(FederationError::TrustChain(TrustChainError::BrokenChain(
+            format!("no valid path found"),
+        )))
     }
 
     pub fn verify(&self) -> Result<(), Vec<FederationError>> {
