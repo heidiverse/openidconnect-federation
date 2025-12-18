@@ -14,15 +14,13 @@ limitations under the License.
 
 */
 
+use heidi_jwt::{
+    jwt::{Jwt, JwtVerifier},
+    models::errors::{JwsError, JwtError, PayloadError},
+};
 use tracing::instrument;
 
-use crate::{
-    jwt::{Jwt, JwtVerifier},
-    models::{
-        EntityConfig, EntityStatement,
-        errors::{FederationError, JwsError, PayloadError, TrustChainError},
-    },
-};
+use crate::models::{EntityConfig, EntityStatement};
 use serde_json::Value as JsonValue;
 
 const ENTITY_STATEMENT_TYPE: &str = "entity-statement+jwt";
@@ -30,37 +28,37 @@ const TYP_CLAIM: &str = "typ";
 
 impl JwtVerifier<EntityStatement> for EntityStatement {
     #[instrument(skip(self, jwt), err)]
-    fn verify_header(&self, jwt: &Jwt<EntityStatement>) -> Result<(), FederationError> {
+    fn verify_header(&self, jwt: &Jwt<EntityStatement>) -> Result<(), JwtError> {
         let header = jwt.header()?;
         let Some(typ) = header.claim(TYP_CLAIM) else {
-            return Err(FederationError::Jws(JwsError::TypeError(
+            return Err(JwtError::Jws(JwsError::TypeError(
                 "typ claim not found".to_string(),
             )));
         };
         let JsonValue::String(typ) = typ else {
-            return Err(FederationError::Jws(JwsError::TypeError(
+            return Err(JwtError::Jws(JwsError::TypeError(
                 "typ claim is not a string".to_string(),
             )));
         };
         if typ != ENTITY_STATEMENT_TYPE {
-            return Err(FederationError::Jws(JwsError::TypeError(
+            return Err(JwtError::Jws(JwsError::TypeError(
                 "typ claim is not 'entity-statement+jwt'".to_string(),
             )));
         }
         let Some(typ) = header.claim("kid") else {
-            return Err(FederationError::Jws(JwsError::InvalidHeader(
+            return Err(JwtError::Jws(JwsError::InvalidHeader(
                 "kid claim not found".to_string(),
             )));
         };
         let JsonValue::String(_) = typ else {
-            return Err(FederationError::Jws(JwsError::TypeError(
+            return Err(JwtError::Jws(JwsError::TypeError(
                 "kid claim is not a string".to_string(),
             )));
         };
         Ok(())
     }
     #[instrument(skip(self, jwt), err)]
-    fn verify_body(&self, jwt: &Jwt<EntityStatement>) -> Result<(), FederationError> {
+    fn verify_body(&self, jwt: &Jwt<EntityStatement>) -> Result<(), JwtError> {
         let unverified = jwt.payload_unverified();
         if unverified.insecure().authority_hints().is_some() {
             return Err(PayloadError::MissingRequiredProperty(
@@ -69,10 +67,9 @@ impl JwtVerifier<EntityStatement> for EntityStatement {
             .into());
         }
         if unverified.insecure().iss() == unverified.insecure().sub() {
-            return Err(TrustChainError::SubjectMismatch(
+            return Err(JwtError::Payload(PayloadError::InvalidPayload(
                 "iss and sub claims should be different if not an entity configuration".to_string(),
-            )
-            .into());
+            )));
         }
         Ok(())
     }
@@ -80,7 +77,7 @@ impl JwtVerifier<EntityStatement> for EntityStatement {
 
 impl JwtVerifier<EntityStatement> for EntityConfig {
     #[instrument(skip(self, jwt), err)]
-    fn verify_header(&self, jwt: &Jwt<EntityStatement>) -> Result<(), FederationError> {
+    fn verify_header(&self, jwt: &Jwt<EntityStatement>) -> Result<(), JwtError> {
         let header = jwt.header()?;
         let Some(typ) = header.claim(TYP_CLAIM) else {
             return Err(JwsError::TypeError("typ claim not found".to_string()).into());
@@ -102,7 +99,7 @@ impl JwtVerifier<EntityStatement> for EntityConfig {
         Ok(())
     }
     #[instrument(skip(self, jwt), err)]
-    fn verify_body(&self, jwt: &Jwt<EntityStatement>) -> Result<(), FederationError> {
+    fn verify_body(&self, jwt: &Jwt<EntityStatement>) -> Result<(), JwtError> {
         let unverified = jwt.payload_unverified();
         if unverified.insecure().authority_hints().is_none()
             && !matches!(self, EntityConfig::TrustAnchor(_))
@@ -113,10 +110,9 @@ impl JwtVerifier<EntityStatement> for EntityConfig {
             .into());
         }
         if unverified.insecure().iss() != unverified.insecure().sub() {
-            return Err(TrustChainError::SubjectMismatch(
+            return Err(JwtError::Payload(PayloadError::InvalidPayload(
                 "iss and sub claims do not match".to_string(),
-            )
-            .into());
+            )));
         }
         Ok(())
     }

@@ -219,9 +219,9 @@ impl From<Value> for Option<serde_json::Value> {
 impl From<serde_json::Value> for Value {
     fn from(value: serde_json::Value) -> Self {
         match value {
-            josekit::Value::Null => Value::Null,
-            josekit::Value::Bool(b) => Value::Boolean(b),
-            josekit::Value::Number(number) => {
+            serde_json::Value::Null => Value::Null,
+            serde_json::Value::Bool(b) => Value::Boolean(b),
+            serde_json::Value::Number(number) => {
                 if let Some(i64) = number.as_i64() {
                     Value::Integer(i64)
                 } else if let Some(f64) = number.as_f64() {
@@ -230,11 +230,11 @@ impl From<serde_json::Value> for Value {
                     Value::Null
                 }
             }
-            josekit::Value::String(s) => Value::String(s),
-            josekit::Value::Array(values) => {
+            serde_json::Value::String(s) => Value::String(s),
+            serde_json::Value::Array(values) => {
                 Value::Array(values.into_iter().map(|a| a.into()).collect::<Vec<_>>())
             }
-            josekit::Value::Object(map) => {
+            serde_json::Value::Object(map) => {
                 Value::Object(map.into_iter().map(|(k, v)| (k, v.into())).collect())
             }
         }

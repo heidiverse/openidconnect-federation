@@ -16,14 +16,17 @@ limitations under the License.
 
 use std::{collections::HashMap, marker::PhantomData};
 
+use heidi_jwt::jwt::Jwt;
+use petgraph::prelude::DiGraphMap;
+use sha2::{Digest, Sha256};
 use tracing::{error, instrument};
 
 use crate::{
     DefaultConfig, FetchConfig,
-    jwt::Jwt,
     models::{
         EntityConfig, EntityStatement,
         errors::{FederationError, TrustChainError},
+        transformer::Value,
     },
 };
 
@@ -31,6 +34,8 @@ use crate::{
 pub struct TrustChain<Config: FetchConfig = DefaultConfig> {
     pub leaf: Entity,
     pub trust_entities: HashMap<String, Entity>,
+    pub trust_anchors: Vec<String>,
+    pub trust_graph: DiGraphMap<[u8; 32], EntityStatement>,
     phantom: PhantomData<Config>,
 }
 
@@ -45,8 +50,9 @@ impl Entity {
     pub fn complete_trust(
         &mut self,
         trust_entities: &mut HashMap<String, Entity>,
+        trust_anchors: &mut Vec<String>,
+        trust_graph: &mut DiGraphMap<[u8; 32], (EntityConfig, EntityStatement)>,
     ) -> Result<(), FederationError> {
-        // leaf entity needs entityconfig and subordinate statement
         let Some(leaf_ec) = self.entity_config.as_ref() else {
             return Err(TrustChainError::InvalidEntityConfig(
                 "Leaf entity config not found".to_string(),
@@ -57,6 +63,8 @@ impl Entity {
             //TODO: refresh leaf
             error!("Leaf entity config verification failed");
         }
+        let leaf_sub_hash: [u8; 32] = Sha256::digest(leaf_ec.sub()).into();
+
         // check if we have all sub statements from the authorities
         for hint in leaf_ec
             .payload_unverified()
@@ -71,12 +79,28 @@ impl Entity {
             {
                 let ec = leaf_ec.fetch_authority(&hint)?;
                 let subordinate = ec.fetch_subordinate(&leaf_ec.sub())?;
-                self.subordinate_statement.push(subordinate);
+                self.subordinate_statement.push(subordinate.clone());
+                let mut old_entities = trust_entities.clone();
                 let entry = trust_entities.entry(ec.sub()).or_insert(Entity {
                     entity_config: None,
                     subordinate_statement: vec![],
                 });
+                if matches!(ec, EntityConfig::TrustAnchor(_)) {
+                    trust_anchors.push(ec.sub());
+                }
+                let sub_hash: [u8; 32] = Sha256::digest(ec.sub()).into();
+
+                trust_graph.add_edge(
+                    sub_hash,
+                    leaf_sub_hash,
+                    (
+                        ec.clone(),
+                        subordinate.payload_unverified().insecure().clone(),
+                    ),
+                );
                 entry.entity_config = Some(ec);
+                let _ = entry.complete_trust(&mut old_entities, trust_anchors, trust_graph);
+                *trust_entities = old_entities;
             }
         }
         for subordinate_statement in &self.subordinate_statement {
@@ -230,6 +254,8 @@ impl<Config: FetchConfig> TrustChain<Config> {
         Self {
             leaf,
             trust_entities: HashMap::new(),
+            trust_anchors: Vec::new(),
+            trust_graph: DiGraphMap::new(),
             phantom: PhantomData,
         }
     }
@@ -239,13 +265,16 @@ impl<Config: FetchConfig> TrustChain<Config> {
                 entity_config: Some(EntityConfig::load_from_url::<Config>(url)?),
                 subordinate_statement: vec![],
             },
+            trust_anchors: Vec::new(),
             trust_entities: HashMap::new(),
+            trust_graph: DiGraphMap::new(),
             phantom: PhantomData,
         })
     }
     #[instrument(skip(chain))]
     pub fn from_trust_chain(chain: &[String]) -> Option<Self> {
         let leaf = chain.first()?;
+        let mut trust_graph = DiGraphMap::new();
         let Ok(leaf) = leaf.parse::<Jwt<EntityStatement>>() else {
             return None;
         };
@@ -257,10 +286,12 @@ impl<Config: FetchConfig> TrustChain<Config> {
             entity_config: Some(EntityConfig::Leaf(leaf.clone())),
             subordinate_statement: vec![],
         };
+        let leaf_sub: [u8; 32] = Sha256::digest(leaf.payload_unverified().insecure().sub()).into();
 
         let mut trust_entities = HashMap::new();
         println!("Leaf Sub: {}", leaf.payload_unverified().insecure().sub());
         println!("Leaf Iss: {}", leaf.payload_unverified().insecure().iss());
+        let mut last_sub: [u8; 32] = [0; 32];
         for (i, jwt) in chain
             .iter()
             .skip(1)
@@ -270,9 +301,21 @@ impl<Config: FetchConfig> TrustChain<Config> {
             let Ok(intermediate) = jwt.parse::<Jwt<EntityStatement>>() else {
                 return None;
             };
+            println!("{}", intermediate.payload_unverified().insecure().sub());
+            let sub = Sha256::digest(intermediate.payload_unverified().insecure().sub()).into();
             if i == 0 {
+                trust_graph.add_edge(
+                    sub,
+                    leaf_sub,
+                    intermediate.payload_unverified().insecure().clone(),
+                );
                 leaf_entity.subordinate_statement = vec![intermediate.clone()];
             } else {
+                trust_graph.add_edge(
+                    sub,
+                    last_sub,
+                    intermediate.payload_unverified().insecure().clone(),
+                );
                 trust_entities.insert(
                     intermediate.payload_unverified().insecure().sub(),
                     Entity {
@@ -281,7 +324,16 @@ impl<Config: FetchConfig> TrustChain<Config> {
                     },
                 );
             }
+
+            last_sub = sub;
         }
+        let trust_anchors = vec![root.payload_unverified().insecure().sub()];
+        let root_sub = Sha256::digest(root.payload_unverified().insecure().sub()).into();
+        trust_graph.add_edge(
+            root_sub,
+            last_sub,
+            root.payload_unverified().insecure().clone(),
+        );
         trust_entities.insert(
             root.payload_unverified().insecure().sub(),
             Entity {
@@ -291,22 +343,48 @@ impl<Config: FetchConfig> TrustChain<Config> {
         );
 
         Some(Self {
-            leaf: Entity {
-                entity_config: Some(EntityConfig::Leaf(leaf)),
-                subordinate_statement: vec![],
-            },
+            leaf: leaf_entity,
+            trust_anchors,
             trust_entities,
+            trust_graph,
             phantom: PhantomData,
         })
     }
     #[instrument(skip(self))]
     pub fn build_trust(&mut self) -> Result<(), FederationError> {
-        self.leaf.complete_trust(&mut self.trust_entities)?;
-        let mut old_state = self.trust_entities.clone();
-        for (sub, entity) in old_state.iter_mut() {
-            entity.complete_trust(&mut self.trust_entities)?;
-            *self.trust_entities.get_mut(sub).unwrap() = entity.clone();
-        }
+        let mut trust_anchors = vec![];
+        let mut trust_graph = DiGraphMap::new();
+        self.leaf.complete_trust(
+            &mut self.trust_entities,
+            &mut trust_anchors,
+            &mut trust_graph,
+        )?;
+
         Ok(())
+    }
+    #[instrument(skip(self))]
+    // Resolve metadata from entity config and metadata_policies following the chains
+    pub fn resolve_metadata(&self) -> HashMap<String, Value> {
+        let mut metadatas = HashMap::new();
+        let base_metadata =
+            if let Some(md) = self.leaf.entity_config.as_ref().and_then(|a| a.metadata()) {
+                md.clone()
+            } else {
+                Value::Object(HashMap::new())
+            };
+
+        // for anchor in &self.trust_anchors {
+        //     let Ok(policy_for_anchor) = merge_policies(anchor, &self.trust_entities) else {
+        //         tracing::warn!("Failed to merge policy");
+        //         continue;
+        //     };
+        //     let mut md_clone = base_metadata.clone();
+        //     if policy_for_anchor.1.apply(&mut md_clone).is_err() {
+        //         tracing::warn!("Failed to apply policy");
+        //         continue;
+        //     }
+        //     metadatas.insert(anchor.to_string(), md_clone);
+        // }
+        metadatas
     }
 }

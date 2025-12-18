@@ -19,15 +19,19 @@ pub mod transformer;
 pub mod trust_chain;
 pub mod verifiers;
 
-use josekit::jwk::JwkSet as JoseJwkSet;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use heidi_jwt::{
+    jwt::{Jwt, Unverified, verifier::DefaultVerifier},
+    models::JwkSet,
+};
 use serde_json::Value as JsonValue;
 use tracing::instrument;
 
 use crate::{
     DefaultConfig, FetchConfig, fetch_jwt,
-    jwt::{Jwt, Unverified},
-    models::errors::{FederationError, TrustChainError},
+    models::{
+        errors::{FederationError, JwsError, TrustChainError},
+        transformer::Value,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -37,13 +41,34 @@ pub enum EntityConfig {
     TrustAnchor(Jwt<EntityStatement>),
 }
 impl EntityConfig {
-    pub fn payload_unverified(&self) -> Unverified<&EntityStatement> {
+    pub fn payload_unverified<'a>(&self) -> Unverified<'a, &EntityStatement> {
         match self {
             EntityConfig::Leaf(jwt)
             | EntityConfig::Intermediate(jwt)
             | EntityConfig::TrustAnchor(jwt) => jwt.payload_unverified(),
         }
     }
+    pub fn metadata(&self) -> Option<Value> {
+        match self {
+            EntityConfig::Leaf(jwt)
+            | EntityConfig::Intermediate(jwt)
+            | EntityConfig::TrustAnchor(jwt) => {
+                let unverified = jwt.payload_unverified();
+                unverified.insecure().metadata.clone()
+            }
+        }
+    }
+    pub fn metadata_policy(&self) -> Option<Value> {
+        match self {
+            EntityConfig::Leaf(jwt)
+            | EntityConfig::Intermediate(jwt)
+            | EntityConfig::TrustAnchor(jwt) => {
+                let unverified = jwt.payload_unverified();
+                unverified.insecure().metadata_policy.clone()
+            }
+        }
+    }
+
     pub fn jwks(&self) -> JwkSet {
         match self {
             EntityConfig::Leaf(jwt)
@@ -73,12 +98,15 @@ impl EntityConfig {
             | EntityConfig::TrustAnchor(jwt) => {
                 jwt.verify_signature(&jwt.payload_unverified().insecure().jwks)
             }
-        }?;
+        }
+        .map_err(|e| FederationError::Jws(JwsError::InvalidSignature(format!("{e}"))))?;
         // verify jwt payload
         match self {
             EntityConfig::Intermediate(jwt)
             | EntityConfig::Leaf(jwt)
-            | EntityConfig::TrustAnchor(jwt) => jwt.verify(self)?,
+            | EntityConfig::TrustAnchor(jwt) => jwt
+                .verify(self)
+                .map_err(|e| FederationError::Jws(JwsError::InvalidFormat(format!("{e}"))))?,
         };
         Ok(())
     }
@@ -91,7 +119,12 @@ impl EntityConfig {
             .into()),
             EntityConfig::Intermediate(jwt) | EntityConfig::TrustAnchor(jwt) => {
                 let es = jwt.payload_unverified();
-                let es = jwt.payload(&es.insecure().jwks)?;
+                let es = jwt
+                    .payload(
+                        &es.insecure().jwks,
+                        &DefaultVerifier::new("entity-statement+jwt".to_string(), vec![]),
+                    )
+                    .map_err(|e| FederationError::Jws(JwsError::BodyParseError(format!("{e}"))))?;
                 let Some(metadata) = es.metadata.as_ref() else {
                     return Err(TrustChainError::InvalidEntityConfig(
                         "Entity Config must have metadata".to_string(),
@@ -236,35 +269,35 @@ crate::models!(
     }
 );
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct JwkSet(
-    #[serde(serialize_with = "JwkSet::serialize_to_string")]
-    #[serde(deserialize_with = "JwkSet::deserialize")]
-    pub JoseJwkSet,
-);
+// #[derive(Deserialize, Serialize, Debug, Clone)]
+// pub struct JwkSet(
+//     #[serde(serialize_with = "JwkSet::serialize_to_string")]
+//     #[serde(deserialize_with = "JwkSet::deserialize")]
+//     pub JoseJwkSet,
+// );
 
-impl JwkSet {
-    fn serialize_to_string<S>(set: &JoseJwkSet, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let set: &serde_json::Map<String, serde_json::Value> = set.as_ref();
-        serializer.serialize_some(set)
-    }
-    fn deserialize<'de, D>(deserializer: D) -> Result<JoseJwkSet, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let set: serde_json::Value = serde_json::Value::deserialize(deserializer)?;
-        let Ok(set) = serde_json::from_value(set) else {
-            return Err(serde::de::Error::custom("Failed to deserialize JWK set"));
-        };
-        let Ok(set) = JoseJwkSet::from_map(set) else {
-            return Err(serde::de::Error::custom("Failed to deserialize JWK set"));
-        };
-        Ok(set)
-    }
-}
+// impl JwkSet {
+//     fn serialize_to_string<S>(set: &JoseJwkSet, serializer: S) -> Result<S::Ok, S::Error>
+//     where
+//         S: Serializer,
+//     {
+//         let set: &serde_json::Map<String, serde_json::Value> = set.as_ref();
+//         serializer.serialize_some(set)
+//     }
+//     fn deserialize<'de, D>(deserializer: D) -> Result<JoseJwkSet, D::Error>
+//     where
+//         D: Deserializer<'de>,
+//     {
+//         let set: serde_json::Value = serde_json::Value::deserialize(deserializer)?;
+//         let Ok(set) = serde_json::from_value(set) else {
+//             return Err(serde::de::Error::custom("Failed to deserialize JWK set"));
+//         };
+//         let Ok(set) = JoseJwkSet::from_map(set) else {
+//             return Err(serde::de::Error::custom("Failed to deserialize JWK set"));
+//         };
+//         Ok(set)
+//     }
+// }
 
 crate::extension!([jti: String], EntityStatement);
 
@@ -335,10 +368,13 @@ macro_rules! models {
 
 #[cfg(test)]
 mod tests {
-    use josekit::Value;
-    use josekit::jwk::JwkSet as JoseJwkSet;
 
-    use crate::models::{EntityStatement, JwkSet, transformer::Transformer};
+    use super::JwkSet;
+
+    use crate::models::{
+        EntityStatement,
+        transformer::{Transformer, Value},
+    };
     #[test]
     fn test_parsing_entity_statement() {
         let es = include_str!("../../test_resources/figure_2_example_entity_statement.json");
@@ -375,7 +411,7 @@ mod tests {
                     "sub" => self.sub = value.as_str().unwrap().to_string(),
                     "iat" => self.iat = value.as_u64().unwrap(),
                     "exp" => self.exp = value.as_u64().unwrap(),
-                    "jwks" => self.jwks = JwkSet(JoseJwkSet::new()),
+                    "jwks" => self.jwks = JwkSet::default(),
                     "authority_hints" => self.authority_hints = value.into_typed_array(),
                     "metadata" => self.metadata = value.into(),
                     "metadata_policy" => self.metadata_policy = value.into(),
@@ -391,7 +427,7 @@ mod tests {
             sub: String::from("example.com"),
             iat: 1630456800,
             exp: 1630456800,
-            jwks: JwkSet(JoseJwkSet::new()),
+            jwks: JwkSet::default(),
             authority_hints: None,
             metadata: None,
             metadata_policy: None,
@@ -423,7 +459,7 @@ mod tests {
                     "sub" => self.sub = value.as_str().unwrap().to_string(),
                     "iat" => self.iat = value.as_u64().unwrap(),
                     "exp" => self.exp = value.as_u64().unwrap(),
-                    "jwks" => self.jwks = JwkSet(JoseJwkSet::new()),
+                    "jwks" => self.jwks = JwkSet::default(),
                     "authority_hints" => self.authority_hints = value.into_typed_array(),
                     "metadata" => self.metadata = value.into(),
                     "metadata_policy" => self.metadata_policy = value.into(),
@@ -440,7 +476,7 @@ mod tests {
             sub: String::from("example.com"),
             iat: 1630456800,
             exp: 1630456800,
-            jwks: JwkSet(JoseJwkSet::new()),
+            jwks: JwkSet::default(),
             authority_hints: None,
             metadata: None,
             metadata_policy: None,

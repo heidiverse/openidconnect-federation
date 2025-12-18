@@ -14,4 +14,41 @@ limitations under the License.
 
 */
 
+use std::collections::HashMap;
+
+use crate::{
+    models::{
+        EntityConfig,
+        errors::{FederationError, PolicyError, TrustChainError},
+        transformer::{Transformer, Value},
+        trust_chain::Entity,
+    },
+    policy::operators::Policy,
+};
+
 pub mod operators;
+
+// /// Merge policies starting from a trust anchor only chosing the first path
+// pub fn merge_policies(
+//     trust_anchor: &str,
+//     trust_entities: &HashMap<String, Entity>,
+// ) -> Result<(Entity, Policy), FederationError> {
+//     let trust_anchor_entity =
+//         trust_entities
+//             .get(trust_anchor)
+//             .ok_or(FederationError::TrustChain(TrustChainError::BrokenChain(
+//                 format!("{} trust anchor not found", trust_anchor),
+//             )))?;
+//     while let Some(entity) = trust_entities.iter().find(|e| e.1.)
+
+//     todo! {}
+// }
+
+// fn fetch_more_policy(
+//     authority: &str,
+//     trust_entities: &HashMap<String, Entity>,
+//     policies: &mut Vec<Policy>,
+//     trust_anchors: &mut Vec<Entity>,
+// ) -> Result<(), FederationError> {
+//     todo! {}
+// }

@@ -257,7 +257,9 @@ impl PolicyOperator {
             }
             PolicyOperator::Unknown => {
                 // TODO: check crit claims in policy object
-                return Err(PolicyError::InvalidPolicyOperator("unknown operator".to_string()).into());
+                return Err(
+                    PolicyError::InvalidPolicyOperator("unknown operator".to_string()).into(),
+                );
             }
         }
         Ok(())
@@ -388,7 +390,7 @@ fn union_values<'a>(a: &'a Value, b: &'a Value) -> Result<Vec<&'a Value>, Federa
     Ok(result)
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Policy {
     #[serde(flatten)]
     pub policy_members: HashMap<String, Value>,
