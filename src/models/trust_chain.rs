@@ -202,7 +202,7 @@ impl Entity {
 impl<Config: FetchConfig> TrustChain<Config> {
     pub fn find_shortest_trust_chain(
         &self,
-        trust_anchors: &[[u8; 32]],
+        trust_anchors: Option<&[[u8; 32]]>,
     ) -> Result<Vec<[u8; 32]>, FederationError> {
         let Some(ec) = self.leaf.entity_config.as_ref() else {
             return Err(FederationError::TrustChain(
@@ -219,7 +219,9 @@ impl<Config: FetchConfig> TrustChain<Config> {
         let mut parent: HashMap<[u8; 32], [u8; 32]> = HashMap::new();
 
         while let Some(current) = queue.pop_front() {
-            if trust_anchors.contains(&current) {
+            if let Some(trust_anchors) = trust_anchors
+                && trust_anchors.contains(&current)
+            {
                 let mut path = vec![current];
                 let mut node = current;
                 while let Some(parent_hash) = parent.get(&node) {
@@ -228,6 +230,21 @@ impl<Config: FetchConfig> TrustChain<Config> {
                 }
                 path.reverse();
                 return Ok(path);
+            }
+            // if we define no trust anchors we break after finding the first CA
+            else if trust_anchors.is_none() {
+                if let Some(ec) = self.trust_graph.edge_weight(current, current) {
+                    if ec.authority_hints.is_none() && ec.iss == ec.sub {
+                        let mut path = vec![current];
+                        let mut node = current;
+                        while let Some(parent_hash) = parent.get(&node) {
+                            path.push(*parent_hash);
+                            node = *parent_hash;
+                        }
+                        path.reverse();
+                        return Ok(path);
+                    }
+                }
             }
             for neighbor in
                 reversed_graph.neighbors_directed(current, petgraph::Direction::Outgoing)

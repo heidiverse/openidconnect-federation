@@ -298,17 +298,18 @@ mod tests {
         println!("{:?}", trust_chain.trust_anchors);
         let first_anchor: [u8; 32] =
             Sha256::digest(trust_chain.trust_anchors.first().unwrap()).into();
+        let im2: [u8; 32] = Sha256::digest("intermediate2").into();
         let leaf: [u8; 32] =
             Sha256::digest(trust_chain.leaf.entity_config.as_ref().unwrap().sub()).into();
 
-        let paths = trust_chain
-            .find_shortest_trust_chain(&[first_anchor])
-            .unwrap();
+        let paths = trust_chain.find_shortest_trust_chain(None).unwrap();
         println!("Best path found:");
         for e in paths.windows(2) {
             let edge = &trust_chain.trust_graph[(e[1], e[0])];
             println!("   {:?}", edge.sub());
         }
+        let edge = &trust_chain.trust_graph[(*paths.last().unwrap(), *paths.last().unwrap())];
+        println!("   {:?}", edge.sub());
     }
 
     fn create_ec(
