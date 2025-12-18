@@ -200,7 +200,7 @@ impl Entity {
 }
 
 impl<Config: FetchConfig> TrustChain<Config> {
-    pub fn find_best_root(
+    pub fn find_shortest_trust_chain(
         &self,
         trust_anchors: &[[u8; 32]],
     ) -> Result<Vec<[u8; 32]>, FederationError> {
@@ -215,6 +215,7 @@ impl<Config: FetchConfig> TrustChain<Config> {
         let mut queue = VecDeque::new();
         queue.push_front(start_hash);
         let mut visited = HashSet::new();
+        visited.insert(start_hash);
         let mut parent: HashMap<[u8; 32], [u8; 32]> = HashMap::new();
 
         while let Some(current) = queue.pop_front() {

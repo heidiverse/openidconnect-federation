@@ -117,13 +117,13 @@ mod tests {
 
     #[test]
     fn test_trust_chain_builder() {
-        let subscriber = FmtSubscriber::builder()
-            .with_line_number(true)
-            .with_max_level(LevelFilter::DEBUG)
-            .with_span_events(FmtSpan::ENTER | FmtSpan::CLOSE)
-            .pretty()
-            .finish();
-        let _ = tracing::subscriber::set_global_default(subscriber);
+        // let subscriber = FmtSubscriber::builder()
+        //     .with_line_number(true)
+        //     .with_max_level(LevelFilter::DEBUG)
+        //     .with_span_events(FmtSpan::ENTER | FmtSpan::CLOSE)
+        //     .pretty()
+        //     .finish();
+        // let _ = tracing::subscriber::set_global_default(subscriber);
         debug!("Test Started");
         let chain: models::transformer::Value =
             serde_json::from_str(include_str!("../test_resources/sunet.json")).unwrap();
@@ -296,21 +296,18 @@ mod tests {
         trust_chain.build_trust().unwrap();
         trust_chain.verify().unwrap();
         println!("{:?}", trust_chain.trust_anchors);
-        let first_anchor = Sha256::digest(trust_chain.trust_anchors.first().unwrap()).into();
+        let first_anchor: [u8; 32] =
+            Sha256::digest(trust_chain.trust_anchors.first().unwrap()).into();
         let leaf: [u8; 32] =
             Sha256::digest(trust_chain.leaf.entity_config.as_ref().unwrap().sub()).into();
 
-        let paths = astar(
-            &trust_chain.trust_graph,
-            first_anchor,
-            |e| e == leaf,
-            |_| 1,
-            |_| 0,
-        )
-        .unwrap();
-        for e in paths.1.windows(2) {
-            let edge = &trust_chain.trust_graph[(e[0], e[1])];
-            println!("{:?}", edge.sub());
+        let paths = trust_chain
+            .find_shortest_trust_chain(&[first_anchor])
+            .unwrap();
+        println!("Best path found:");
+        for e in paths.windows(2) {
+            let edge = &trust_chain.trust_graph[(e[1], e[0])];
+            println!("   {:?}", edge.sub());
         }
     }
 
