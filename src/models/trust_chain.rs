@@ -432,6 +432,55 @@ impl<Config: FetchConfig> TrustChain<Config> {
             phantom: PhantomData,
         })
     }
+    pub fn from_trust_cache(graph: &[String]) -> Result<Self, FederationError> {
+        let mut trust_entities = HashMap::new();
+        let mut trust_anchors = Vec::new();
+        let mut leaf = None;
+        for entity in graph {
+            let Ok(entity) = entity.parse::<Jwt<EntityStatement>>() else {
+                return Err(FederationError::TrustChain(TrustChainError::BrokenChain(
+                    format!("Cannot parse jwt"),
+                )));
+            };
+            let statement = entity.payload_unverified().insecure().to_owned();
+            let is_ec = statement.iss == statement.sub;
+            let entry = trust_entities.entry(statement.sub()).or_insert(Entity {
+                entity_config: None,
+                subordinate_statement: vec![],
+            });
+            if is_ec {
+                if statement.authority_hints.is_none() {
+                    println!("Trust Anchor found {}", statement.sub);
+                    trust_anchors.push(statement.sub.to_string());
+                    entry.entity_config = Some(EntityConfig::TrustAnchor(entity))
+                } else {
+                    println!("Entity Config found {}", statement.sub);
+                    entry.entity_config = Some(EntityConfig::Leaf(entity.clone()));
+                    leaf = Some(statement.sub());
+                }
+            } else {
+                println!("Subordinate Statement found {}", statement.sub);
+                entry.subordinate_statement.push(entity);
+            }
+        }
+        let Some(leaf) = leaf else {
+            return Err(FederationError::TrustChain(
+                TrustChainError::InvalidEntityConfig(format!("No leaf entity found")),
+            ));
+        };
+        let Some(leaf) = trust_entities.get(&leaf) else {
+            return Err(FederationError::TrustChain(
+                TrustChainError::InvalidEntityConfig(format!("No leaf entity found")),
+            ));
+        };
+        Ok(Self {
+            leaf: leaf.clone(),
+            trust_entities,
+            trust_anchors: vec![],
+            trust_graph: DiGraphMap::new(),
+            phantom: PhantomData,
+        })
+    }
     #[instrument(skip(chain))]
     pub fn from_trust_chain(chain: &[String]) -> Option<Self> {
         let leaf = chain.first()?;

@@ -290,12 +290,12 @@ mod tests {
             intermediate2_jwt,
             root_jwt,
         ];
-        println!("{}", serde_json::to_string(&chain).unwrap());
-        let mut trust_chain = DefaultTrustChain::from_trust_chain(&chain).unwrap();
-        println!("{:?}", trust_chain.trust_entities);
+
+        let mut trust_chain = DefaultTrustChain::from_trust_cache(&chain).unwrap();
+
         trust_chain.build_trust().unwrap();
         trust_chain.verify().unwrap();
-        println!("{:?}", trust_chain.trust_anchors);
+
         let first_anchor: [u8; 32] =
             Sha256::digest(trust_chain.trust_anchors.first().unwrap()).into();
         let im2: [u8; 32] = Sha256::digest("intermediate2").into();
