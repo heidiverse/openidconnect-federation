@@ -14,17 +14,7 @@ limitations under the License.
 
 */
 
-use std::collections::HashMap;
 
-use crate::{
-    models::{
-        EntityConfig,
-        errors::{FederationError, PolicyError, TrustChainError},
-        transformer::{Transformer, Value},
-        trust_chain::Entity,
-    },
-    policy::operators::Policy,
-};
 
 pub mod operators;
 

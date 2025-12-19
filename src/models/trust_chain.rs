@@ -219,10 +219,10 @@ impl<Config: FetchConfig> FederationRelation<Config> {
     ) -> Result<Vec<EntityStatement>, FederationError> {
         let Some(ec) = self.leaf.entity_config.as_ref() else {
             return Err(FederationError::TrustChain(
-                TrustChainError::InvalidEntityConfig(format!("leaf needs EC")),
+                TrustChainError::InvalidEntityConfig("leaf needs EC".to_string()),
             ));
         };
-        let start_hash: [u8; 32] = Sha256::digest(&ec.sub()).into();
+        let start_hash: [u8; 32] = Sha256::digest(ec.sub()).into();
         let reversed_graph = Reversed(&self.trust_graph);
 
         let mut queue = VecDeque::new();
@@ -250,22 +250,21 @@ impl<Config: FetchConfig> FederationRelation<Config> {
                     let Some(entity_statement) = self.trust_graph.edge_weight(window[1], window[0])
                     else {
                         return Err(FederationError::TrustChain(TrustChainError::BrokenChain(
-                            format!("No entity statement found"),
+                            "No entity statement found".to_string(),
                         )));
                     };
                     chain.push(entity_statement.clone());
                 }
-                if let Some(root_ec) = self.trust_graph.edge_weight(current, current) {
-                    if root_ec.authority_hints.is_none() && root_ec.iss == root_ec.sub {
+                if let Some(root_ec) = self.trust_graph.edge_weight(current, current)
+                    && root_ec.authority_hints.is_none() && root_ec.iss == root_ec.sub {
                         chain.push(root_ec.clone());
                     }
-                }
                 return Ok(chain);
             }
             // if we define no trust anchors we break after finding the first CA
-            else if trust_anchors.is_none() {
-                if let Some(ec) = self.trust_graph.edge_weight(current, current) {
-                    if ec.authority_hints.is_none() && ec.iss == ec.sub {
+            else if trust_anchors.is_none()
+                && let Some(ec) = self.trust_graph.edge_weight(current, current)
+                    && ec.authority_hints.is_none() && ec.iss == ec.sub {
                         let mut path = vec![current];
                         let mut node = current;
                         while let Some(parent_hash) = parent.get(&node) {
@@ -284,9 +283,7 @@ impl<Config: FetchConfig> FederationRelation<Config> {
                                 self.trust_graph.edge_weight(window[1], window[0])
                             else {
                                 return Err(FederationError::TrustChain(
-                                    TrustChainError::BrokenChain(format!(
-                                        "No entity statement found"
-                                    )),
+                                    TrustChainError::BrokenChain("No entity statement found".to_string()),
                                 ));
                             };
                             chain.push(entity_statement.clone());
@@ -294,8 +291,6 @@ impl<Config: FetchConfig> FederationRelation<Config> {
                         chain.push(ec.clone());
                         return Ok(chain);
                     }
-                }
-            }
             for neighbor in
                 reversed_graph.neighbors_directed(current, petgraph::Direction::Outgoing)
             {
@@ -307,7 +302,7 @@ impl<Config: FetchConfig> FederationRelation<Config> {
         }
 
         Err(FederationError::TrustChain(TrustChainError::BrokenChain(
-            format!("no valid path found"),
+            "no valid path found".to_string(),
         )))
     }
 
@@ -422,7 +417,7 @@ impl<Config: FetchConfig> FederationRelation<Config> {
                     let sub_ordinate_keys = issuer
                         .subordinate_statement
                         .iter()
-                        .map(|sub_st| {
+                        .flat_map(|sub_st| {
                             sub_st
                                 .payload_unverified()
                                 .insecure()
@@ -433,7 +428,6 @@ impl<Config: FetchConfig> FederationRelation<Config> {
                                 .cloned()
                                 .collect::<Vec<_>>()
                         })
-                        .flatten()
                         .collect::<Vec<_>>();
                     let mut jwk_set = JwkSet::new();
                     for key in sub_ordinate_keys {
@@ -443,14 +437,12 @@ impl<Config: FetchConfig> FederationRelation<Config> {
                         errors.push(TrustChainError::BrokenChain(format!(
                             "Error in issuer statement [{iss}] -> missing issuer statement"
                         )));
-                    } else {
-                        if let Err(e) =
-                            sub_state.verify_signature(&heidi_jwt::models::JwkSet(jwk_set))
-                        {
-                            errors.push(TrustChainError::ConfigNotSignedWithSubordinate(format!(
-                                "Error in issuer statement [{iss}] -> {e}"
-                            )));
-                        }
+                    } else if let Err(e) =
+                        sub_state.verify_signature(&heidi_jwt::models::JwkSet(jwk_set))
+                    {
+                        errors.push(TrustChainError::ConfigNotSignedWithSubordinate(format!(
+                            "Error in issuer statement [{iss}] -> {e}"
+                        )));
                     }
                 }
             }
@@ -489,7 +481,7 @@ impl<Config: FetchConfig> FederationRelation<Config> {
         for entity in graph {
             let Ok(entity) = entity.parse::<Jwt<EntityStatement>>() else {
                 return Err(FederationError::TrustChain(TrustChainError::BrokenChain(
-                    format!("Cannot parse jwt"),
+                    "Cannot parse jwt".to_string(),
                 )));
             };
             let statement = entity.payload_unverified().insecure().to_owned();
@@ -515,12 +507,12 @@ impl<Config: FetchConfig> FederationRelation<Config> {
         }
         let Some(leaf) = leaf else {
             return Err(FederationError::TrustChain(
-                TrustChainError::InvalidEntityConfig(format!("No leaf entity found")),
+                TrustChainError::InvalidEntityConfig("No leaf entity found".to_string()),
             ));
         };
         let Some(leaf) = trust_entities.get(&leaf) else {
             return Err(FederationError::TrustChain(
-                TrustChainError::InvalidEntityConfig(format!("No leaf entity found")),
+                TrustChainError::InvalidEntityConfig("No leaf entity found".to_string()),
             ));
         };
         Ok(Self {
@@ -599,7 +591,7 @@ impl<Config: FetchConfig> FederationRelation<Config> {
     #[instrument(skip(self))]
     // Resolve metadata from entity config and metadata_policies following the chains
     pub fn resolve_metadata(&self) -> HashMap<String, Value> {
-        let mut metadatas = HashMap::new();
+        let metadatas = HashMap::new();
         let base_metadata =
             if let Some(md) = self.leaf.entity_config.as_ref().and_then(|a| a.metadata()) {
                 md.clone()
