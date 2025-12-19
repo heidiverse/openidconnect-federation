@@ -592,33 +592,41 @@ impl<Config: FetchConfig> FederationRelation<Config> {
     }
     #[instrument(skip(self, trust_store))]
     // Resolve metadata from entity config and metadata_policies following the chains
-    pub fn resolve_metadata(&self, trust_store: Option<&TrustStore>) -> Value {
+    pub fn resolve_metadata(&self, trust_store: Option<&TrustStore>) -> HashMap<String, Value> {
         let mut base_metadata =
             if let Some(md) = self.leaf.entity_config.as_ref().and_then(|a| a.metadata()) {
                 md.clone()
             } else {
-                Value::Object(HashMap::new())
+                HashMap::new()
             };
         let Ok(mut best_path) = self.find_shortest_trust_chain(trust_store) else {
-            return Value::Null;
+            return HashMap::new();
         };
         best_path.reverse();
-        let mut policy = Policy::default();
+        let mut policy = HashMap::<String, Policy>::new();
         for p in best_path {
             // Skip entity configs
             if p.iss == p.sub {
                 continue;
             }
             if let Some(p) = p.metadata_policy() {
-                let Ok(p) = Policy::try_from(serde_json::Value::from(p)) else {
-                    // if a policy fails to parse, we skip it.
-                    continue;
-                };
-                let _ = policy.merge_with(&p);
+                for (k, p) in p {
+                    let Ok(p) = Policy::try_from(serde_json::Value::from(p)) else {
+                        // if a policy fails to parse, we skip it.
+                        continue;
+                    };
+
+                    let e = policy.entry(k).or_default();
+                    let _ = e.merge_with(&p);
+                }
             }
         }
         //ignore errors on applying policies
-        let _ = policy.apply(&mut base_metadata);
+        for (entity_type, base_data) in &mut base_metadata {
+            if let Some(p) = policy.get(entity_type) {
+                let _ = p.apply(base_data);
+            }
+        }
         base_metadata
     }
 }

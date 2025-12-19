@@ -146,36 +146,7 @@ mod tests {
         let config = EntityConfig::TrustAnchor(ec);
         println!("{:?}", config.verify());
     }
-    #[test]
-    fn test_chain() {
-        let chain: Vec<String> =
-            serde_json::from_str(include_str!("../test_resources/figure_6_trust_chain.json"))
-                .unwrap();
-        let mut c = DefaultFederationRelation::from_trust_chain(&chain).unwrap();
-        c.build_trust().unwrap();
-        // c.verify().unwrap();
-        let first_anchor = Sha256::digest(c.trust_anchors.first().unwrap()).into();
-        let leaf: [u8; 32] = Sha256::digest(c.leaf.entity_config.as_ref().unwrap().sub()).into();
 
-        let paths = astar(&c.trust_graph, first_anchor, |e| e == leaf, |_| 1, |_| 0).unwrap();
-        let mut metadata = c.leaf.entity_config.as_ref().unwrap().metadata().unwrap();
-        let mut policy = Policy::default();
-        for e in paths.1.windows(2) {
-            let edge = &c.trust_graph[(e[0], e[1])];
-            if let Some(md_policy) = edge.metadata_policy() {
-                let md_policy: serde_json::Value = md_policy.into();
-                let _ = policy.merge_with(&serde_json::from_value(md_policy).unwrap());
-            }
-            println!("{:?}", edge.sub());
-        }
-        let _ = policy.apply(&mut metadata);
-        println!("\n\n\n");
-        println!("{}", serde_json::to_string(&metadata).unwrap());
-        println!(
-            "{}",
-            serde_json::to_string(&c.leaf.entity_config.unwrap().metadata().unwrap()).unwrap()
-        );
-    }
     #[test]
     fn refresh() {
         let subscriber = FmtSubscriber::builder()
@@ -260,7 +231,13 @@ mod tests {
             "root",
             "intermediate2",
             &Value::Null,
-            &Value::Null,
+            &json!({
+                "openid_provider": {
+                  "id_token_signing_alg_values_supported": {
+                    "add": ["RS256", "RS384", "RS512"]
+                  },
+                },
+            }),
             &root_signer,
         );
         let intermediate2_signer = heidi_jwt::ES256
@@ -298,7 +275,9 @@ mod tests {
 
         let (leaf_ec, _) = create_ec(
             "leaf",
-            &Value::Null,
+            &json!({ "openid_provider": {
+                "issuer" : "https://test.example.com"
+            } }),
             &Value::Null,
             &leaf_key,
             &json!(["intermediate1"]),
@@ -330,6 +309,12 @@ mod tests {
         for s in paths {
             println!("{}", s.sub());
         }
+
+        let resolved_metadata = trust_chain.resolve_metadata(None);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&resolved_metadata).unwrap()
+        );
     }
 
     fn create_ec(

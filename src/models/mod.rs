@@ -19,6 +19,8 @@ pub mod transformer;
 pub mod trust_chain;
 pub mod verifiers;
 
+use std::collections::HashMap;
+
 use heidi_jwt::{
     jwt::{Jwt, Unverified, verifier::DefaultVerifier},
     models::JwkSet,
@@ -48,7 +50,7 @@ impl EntityConfig {
             | EntityConfig::TrustAnchor(jwt) => jwt.payload_unverified(),
         }
     }
-    pub fn metadata(&self) -> Option<Value> {
+    pub fn metadata(&self) -> Option<HashMap<String, Value>> {
         match self {
             EntityConfig::Leaf(jwt)
             | EntityConfig::Intermediate(jwt)
@@ -58,7 +60,7 @@ impl EntityConfig {
             }
         }
     }
-    pub fn metadata_policy(&self) -> Option<Value> {
+    pub fn metadata_policy(&self) -> Option<HashMap<String, Value>> {
         match self {
             EntityConfig::Leaf(jwt)
             | EntityConfig::Intermediate(jwt)
@@ -235,8 +237,8 @@ crate::models!(
         exp: u64,
         jwks: JwkSet,
         authority_hints: Option<Vec<String>>,
-        metadata: Option<transformer::Value>,
-        metadata_policy: Option<transformer::Value>,
+        metadata: Option<HashMap<String, transformer::Value>>,
+        metadata_policy: Option<HashMap<String, transformer::Value>>,
         constraints: Option<transformer::Value>,
         crit: Option<Vec<String>>,
         metadata_policy_crit: Option<Vec<String>>,
