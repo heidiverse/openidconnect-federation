@@ -21,12 +21,12 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use crate::models::{
     errors::{FederationError, InternetError, JwsError},
-    trust_chain::TrustChain,
+    trust_chain::FederationRelation,
 };
 
 pub mod models;
 pub mod policy;
-pub type DefaultTrustChain = TrustChain;
+pub type DefaultFederationRelation = FederationRelation;
 pub trait FetchConfig {
     const VERIFY_TLS: bool;
 }
@@ -89,9 +89,6 @@ pub async fn fetch_jwt_async<
 
 #[cfg(test)]
 mod tests {
-
-    use std::hash::RandomState;
-
     use heidi_jwt::{
         Jwk, JwsHeader, JwsSigner,
         chrono::Duration,
@@ -100,20 +97,17 @@ mod tests {
             creator::{JwtCreator, Signer},
         },
     };
-    use petgraph::{
-        algo::{all_simple_paths, astar, dijkstra},
-        visit::Visitable,
-    };
+    use petgraph::algo::astar;
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
     use tracing::{debug, level_filters::LevelFilter};
     use tracing_subscriber::{FmtSubscriber, fmt::format::FmtSpan};
 
     use crate::{
-        DefaultConfig, DefaultTrustChain,
+        DefaultConfig, DefaultFederationRelation,
         models::{
             self, EntityConfig, EntityStatement,
-            trust_chain::{TrustAnchor, TrustChain, TrustStore},
+            trust_chain::{TrustAnchor, TrustStore},
         },
         policy::operators::Policy,
     };
@@ -131,7 +125,7 @@ mod tests {
         let chain: models::transformer::Value =
             serde_json::from_str(include_str!("../test_resources/sunet.json")).unwrap();
         let chain: Vec<String> = chain.into_typed_array().unwrap();
-        let mut trust_chain = DefaultTrustChain::from_trust_chain(&chain).unwrap();
+        let mut trust_chain = DefaultFederationRelation::from_trust_chain(&chain).unwrap();
         let errors = trust_chain.build_trust().err();
         debug!(error = ?errors, "Test Ended");
     }
@@ -157,7 +151,7 @@ mod tests {
         let chain: Vec<String> =
             serde_json::from_str(include_str!("../test_resources/figure_6_trust_chain.json"))
                 .unwrap();
-        let mut c = DefaultTrustChain::from_trust_chain(&chain).unwrap();
+        let mut c = DefaultFederationRelation::from_trust_chain(&chain).unwrap();
         c.build_trust().unwrap();
         // c.verify().unwrap();
         let first_anchor = Sha256::digest(c.trust_anchors.first().unwrap()).into();
@@ -211,7 +205,7 @@ mod tests {
             .finish();
         let _ = tracing::subscriber::set_global_default(subscriber);
         let issuer = "https://heidi-issuer-ws-dev.ubique.ch/zvv/c";
-        let mut trust_chain = DefaultTrustChain::new_from_url(issuer).unwrap();
+        let mut trust_chain = DefaultFederationRelation::new_from_url(issuer).unwrap();
         let res = trust_chain.build_trust();
         debug!(error = ?res, "[build_trust]");
         let res = trust_chain.verify();
@@ -229,7 +223,7 @@ mod tests {
         let _ = tracing::subscriber::set_global_default(subscriber);
         // let issuer = "https://procivis.sandbox.findy.fi/ssi/openid4vci/final-1.0/df0fc41b-f631-4f3c-b4ba-6b9e13c75e54";
         let issuer = "https://issuer.waltid.dev.findy.fi/draft13";
-        let mut trust_chain = DefaultTrustChain::new_from_url(issuer).unwrap();
+        let mut trust_chain = DefaultFederationRelation::new_from_url(issuer).unwrap();
         let res = trust_chain.build_trust();
         debug!(error = ?res, "[build_trust]");
         let res = trust_chain.verify();
@@ -320,7 +314,7 @@ mod tests {
             root2_jwt,
         ];
 
-        let mut trust_chain = DefaultTrustChain::from_trust_cache(&chain).unwrap();
+        let mut trust_chain = DefaultFederationRelation::from_trust_cache(&chain).unwrap();
 
         trust_chain.build_trust().unwrap();
         trust_chain.verify().unwrap();

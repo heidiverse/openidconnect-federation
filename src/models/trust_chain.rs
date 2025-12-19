@@ -51,7 +51,7 @@ pub enum TrustAnchor {
 }
 
 #[derive(Debug, Clone)]
-pub struct TrustChain<Config: FetchConfig = DefaultConfig> {
+pub struct FederationRelation<Config: FetchConfig = DefaultConfig> {
     pub leaf: Entity,
     pub trust_entities: HashMap<String, Entity>,
     pub trust_anchors: Vec<String>,
@@ -212,7 +212,7 @@ impl Entity {
     }
 }
 
-impl<Config: FetchConfig> TrustChain<Config> {
+impl<Config: FetchConfig> FederationRelation<Config> {
     pub fn find_shortest_trust_chain(
         &self,
         trust_anchors: Option<&TrustStore>,
