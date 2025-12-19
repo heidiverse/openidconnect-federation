@@ -46,7 +46,7 @@ impl TrustStore {
     }
 }
 pub enum TrustAnchor {
-    Entity(EntityConfig),
+    Entity(Box<EntityConfig>),
     Subject(String),
 }
 
@@ -256,41 +256,42 @@ impl<Config: FetchConfig> FederationRelation<Config> {
                     chain.push(entity_statement.clone());
                 }
                 if let Some(root_ec) = self.trust_graph.edge_weight(current, current)
-                    && root_ec.authority_hints.is_none() && root_ec.iss == root_ec.sub {
-                        chain.push(root_ec.clone());
-                    }
+                    && root_ec.authority_hints.is_none()
+                    && root_ec.iss == root_ec.sub
+                {
+                    chain.push(root_ec.clone());
+                }
                 return Ok(chain);
             }
             // if we define no trust anchors we break after finding the first CA
             else if trust_anchors.is_none()
                 && let Some(ec) = self.trust_graph.edge_weight(current, current)
-                    && ec.authority_hints.is_none() && ec.iss == ec.sub {
-                        let mut path = vec![current];
-                        let mut node = current;
-                        while let Some(parent_hash) = parent.get(&node) {
-                            path.push(*parent_hash);
-                            node = *parent_hash;
-                        }
-                        path.reverse();
-                        let mut chain = Vec::new();
-                        if let Some(entity_config_leaf) =
-                            self.trust_graph.edge_weight(path[0], path[0])
-                        {
-                            chain.push(entity_config_leaf.clone());
-                        }
-                        for window in path.windows(2) {
-                            let Some(entity_statement) =
-                                self.trust_graph.edge_weight(window[1], window[0])
-                            else {
-                                return Err(FederationError::TrustChain(
-                                    TrustChainError::BrokenChain("No entity statement found".to_string()),
-                                ));
-                            };
-                            chain.push(entity_statement.clone());
-                        }
-                        chain.push(ec.clone());
-                        return Ok(chain);
-                    }
+                && ec.authority_hints.is_none()
+                && ec.iss == ec.sub
+            {
+                let mut path = vec![current];
+                let mut node = current;
+                while let Some(parent_hash) = parent.get(&node) {
+                    path.push(*parent_hash);
+                    node = *parent_hash;
+                }
+                path.reverse();
+                let mut chain = Vec::new();
+                if let Some(entity_config_leaf) = self.trust_graph.edge_weight(path[0], path[0]) {
+                    chain.push(entity_config_leaf.clone());
+                }
+                for window in path.windows(2) {
+                    let Some(entity_statement) = self.trust_graph.edge_weight(window[1], window[0])
+                    else {
+                        return Err(FederationError::TrustChain(TrustChainError::BrokenChain(
+                            "No entity statement found".to_string(),
+                        )));
+                    };
+                    chain.push(entity_statement.clone());
+                }
+                chain.push(ec.clone());
+                return Ok(chain);
+            }
             for neighbor in
                 reversed_graph.neighbors_directed(current, petgraph::Direction::Outgoing)
             {
