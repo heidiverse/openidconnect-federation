@@ -685,6 +685,201 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_example_federation_relation() {
+        // Create Anchor A (node 5)
+        let anchor_a_key = heidi_jwt::ES256.generate_key_pair().unwrap();
+        let anchor_a_jwk = anchor_a_key.to_jwk_key_pair();
+        let (anchor_a_jwt, anchor_a_signer) = create_ec(
+            "Anchor A",
+            &Value::Null,
+            &Value::Null,
+            &anchor_a_jwk,
+            &Value::Null,
+        );
+
+        // Create Anchor B (node 6)
+        let anchor_b_key = heidi_jwt::ES256.generate_key_pair().unwrap();
+        let anchor_b_jwk = anchor_b_key.to_jwk_key_pair();
+        let (anchor_b_jwt, anchor_b_signer) = create_ec(
+            "Anchor B",
+            &Value::Null,
+            &Value::Null,
+            &anchor_b_jwk,
+            &Value::Null,
+        );
+
+        // 5 -> 3: Anchor A issues statement about intermediate3
+        let (intermediate3_from_a, intermediate3_key) = create_statement(
+            "Anchor A",
+            "intermediate3",
+            &Value::Null,
+            &Value::Null,
+            &anchor_a_signer,
+        );
+        let intermediate3_signer = heidi_jwt::ES256
+            .signer_from_jwk(&intermediate3_key)
+            .unwrap();
+
+        // 6 -> 2: Anchor B issues statement about intermediate2
+        let (intermediate2_from_b, intermediate2_key) = create_statement(
+            "Anchor B",
+            "intermediate2",
+            &Value::Null,
+            &Value::Null,
+            &anchor_b_signer,
+        );
+        let intermediate2_signer = heidi_jwt::ES256
+            .signer_from_jwk(&intermediate2_key)
+            .unwrap();
+
+        // 6 -> 3: Anchor B issues statement about intermediate3
+        let (intermediate3_from_b, _) = create_cross_signed(
+            "Anchor B",
+            "intermediate3",
+            &Value::Null,
+            &Value::Null,
+            &anchor_b_signer,
+            &intermediate3_key,
+        );
+
+        // 2 -> 1: intermediate2 issues statement about intermediate1
+        let (intermediate1_from_2, intermediate1_key) = create_statement(
+            "intermediate2",
+            "intermediate1",
+            &Value::Null,
+            &Value::Null,
+            &intermediate2_signer,
+        );
+        let intermediate1_signer = heidi_jwt::ES256
+            .signer_from_jwk(&intermediate1_key)
+            .unwrap();
+
+        // 3 -> 0: intermediate3 issues statement about leaf A
+        let (leaf_a_from_3, leaf_a_key) = create_statement(
+            "intermediate3",
+            "leaf A",
+            &Value::Null,
+            &Value::Null,
+            &intermediate3_signer,
+        );
+
+        // 6 -> 0: Anchor B issues statement about leaf A
+        let (leaf_a_from_b, _) = create_cross_signed(
+            "Anchor B",
+            "leaf A",
+            &Value::Null,
+            &Value::Null,
+            &anchor_b_signer,
+            &leaf_a_key,
+        );
+
+        // 1 -> 10: intermediate1 issues statement about leaf B
+        let (leaf_b_from_1, leaf_b_key) = create_statement(
+            "intermediate1",
+            "leaf B",
+            &Value::Null,
+            &Value::Null,
+            &intermediate1_signer,
+        );
+
+        // 0 -> 0: leaf A entity config
+        let (leaf_a_ec, _) = create_ec(
+            "leaf A",
+            &json!({ "openid_provider": {
+                "issuer" : "https://leaf-a.example.com"
+            } }),
+            &Value::Null,
+            &leaf_a_key,
+            &json!(["intermediate3", "Anchor B"]),
+        );
+
+        // 10 -> 10: leaf B entity config
+        let (leaf_b_ec, _) = create_ec(
+            "leaf B",
+            &json!({ "openid_provider": {
+                "issuer" : "https://leaf-b.example.com"
+            } }),
+            &Value::Null,
+            &leaf_b_key,
+            &json!(["intermediate1"]),
+        );
+
+        let chain = vec![
+            leaf_a_ec,
+            leaf_b_ec,
+            leaf_a_from_3,
+            leaf_a_from_b,
+            leaf_b_from_1,
+            intermediate1_from_2,
+            intermediate2_from_b,
+            intermediate3_from_a,
+            intermediate3_from_b,
+            anchor_a_jwt,
+            anchor_b_jwt,
+        ];
+
+        let mut trust_chain = DefaultFederationRelation::from_trust_cache(&chain).unwrap();
+
+        trust_chain.build_trust().unwrap();
+        trust_chain.verify().unwrap();
+
+        let anchor_a: TrustAnchor = TrustAnchor::Subject("Anchor A".to_string());
+        let anchor_b: TrustAnchor = TrustAnchor::Subject("Anchor B".to_string());
+
+        let trust_store = TrustStore(vec![anchor_a, anchor_b]);
+        let paths = trust_chain
+            .find_shortest_trust_chain(Some(&trust_store))
+            .unwrap();
+        println!("Best path found:");
+        for s in paths {
+            println!("   {}", s.sub());
+        }
+
+        let resolved_metadata = trust_chain.resolve_metadata(None);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&resolved_metadata).unwrap()
+        );
+
+        println!(
+            "{:?}",
+            Dot::with_attr_getters(
+                &trust_chain.trust_graph,
+                &[Config::EdgeNoLabel, Config::NodeNoLabel],
+                &|_, id| {
+                    if id.0 == id.1 {
+                        String::from("color = \"red\", label = \"EntityConfig\"")
+                    } else {
+                        String::new()
+                    }
+                },
+                &|_, node_id| {
+                    {
+                        let Some(entity) = trust_chain
+                            .trust_entities
+                            .iter()
+                            .find(|e| NodeId::from(Sha256::digest(e.0)) == node_id.0)
+                        else {
+                            return String::new();
+                        };
+                        if let Some(ec) = &entity.1.entity_config {
+                            format!("label = \"{}\"", ec.sub())
+                        } else {
+                            format!(
+                                "label = \"{}\"",
+                                entity.1.subordinate_statement[0]
+                                    .payload_unverified()
+                                    .insecure()
+                                    .sub()
+                            )
+                        }
+                    }
+                }
+            )
+        );
+    }
+
     fn create_ec(
         iss: &str,
         metadata: &Value,
