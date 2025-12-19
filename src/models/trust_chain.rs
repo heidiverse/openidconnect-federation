@@ -34,6 +34,7 @@ use crate::{
         errors::{FederationError, TrustChainError},
         transformer::Value,
     },
+    policy::operators::Policy,
 };
 pub type NodeId = [u8; 32];
 pub struct TrustStore(pub Vec<TrustAnchor>);
@@ -589,29 +590,35 @@ impl<Config: FetchConfig> FederationRelation<Config> {
         self.trust_graph = trust_graph;
         Ok(())
     }
-    #[instrument(skip(self))]
+    #[instrument(skip(self, trust_store))]
     // Resolve metadata from entity config and metadata_policies following the chains
-    pub fn resolve_metadata(&self) -> HashMap<String, Value> {
-        let metadatas = HashMap::new();
-        let base_metadata =
+    pub fn resolve_metadata(&self, trust_store: Option<&TrustStore>) -> Value {
+        let mut base_metadata =
             if let Some(md) = self.leaf.entity_config.as_ref().and_then(|a| a.metadata()) {
                 md.clone()
             } else {
                 Value::Object(HashMap::new())
             };
-
-        // for anchor in &self.trust_anchors {
-        //     let Ok(policy_for_anchor) = merge_policies(anchor, &self.trust_entities) else {
-        //         tracing::warn!("Failed to merge policy");
-        //         continue;
-        //     };
-        //     let mut md_clone = base_metadata.clone();
-        //     if policy_for_anchor.1.apply(&mut md_clone).is_err() {
-        //         tracing::warn!("Failed to apply policy");
-        //         continue;
-        //     }
-        //     metadatas.insert(anchor.to_string(), md_clone);
-        // }
-        metadatas
+        let Ok(mut best_path) = self.find_shortest_trust_chain(trust_store) else {
+            return Value::Null;
+        };
+        best_path.reverse();
+        let mut policy = Policy::default();
+        for p in best_path {
+            // Skip entity configs
+            if p.iss == p.sub {
+                continue;
+            }
+            if let Some(p) = p.metadata_policy() {
+                let Ok(p) = Policy::try_from(serde_json::Value::from(p)) else {
+                    // if a policy fails to parse, we skip it.
+                    continue;
+                };
+                let _ = policy.merge_with(&p);
+            }
+        }
+        //ignore errors on applying policies
+        let _ = policy.apply(&mut base_metadata);
+        base_metadata
     }
 }

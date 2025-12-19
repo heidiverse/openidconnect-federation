@@ -21,7 +21,7 @@ use tracing::{instrument, warn};
 
 use crate::models::{
     self,
-    errors::{FederationError, PolicyError},
+    errors::{FederationError, PayloadError, PolicyError},
     transformer::{self, Value},
 };
 
@@ -447,6 +447,16 @@ impl Policy {
             }
         }
         Ok(())
+    }
+}
+
+impl TryFrom<serde_json::Value> for Policy {
+    type Error = FederationError;
+
+    fn try_from(value: serde_json::Value) -> Result<Self, Self::Error> {
+        serde_json::from_value(value).map_err(|e| {
+            FederationError::Payload(PayloadError::MissingRequiredProperty(format!("{e}")))
+        })
     }
 }
 
