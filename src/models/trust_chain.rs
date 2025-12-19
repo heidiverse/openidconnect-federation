@@ -21,9 +21,8 @@ use std::{
 
 use heidi_jwt::{JwkSet, jwt::Jwt};
 use petgraph::{
-    data::DataMap,
     prelude::DiGraphMap,
-    visit::{Bfs, IntoNeighborsDirected, Reversed},
+    visit::{IntoNeighborsDirected, Reversed},
 };
 use sha2::{Digest, Sha256};
 use tracing::{error, instrument};
@@ -36,6 +35,20 @@ use crate::{
         transformer::Value,
     },
 };
+pub type NodeId = [u8; 32];
+pub struct TrustStore(pub Vec<TrustAnchor>);
+impl TrustStore {
+    pub fn is_trusted(&self, node_id: NodeId) -> bool {
+        self.0.iter().any(|anchor| match anchor {
+            TrustAnchor::Entity(entity) => NodeId::from(Sha256::digest(entity.sub())) == node_id,
+            TrustAnchor::Subject(subject) => NodeId::from(Sha256::digest(subject)) == node_id,
+        })
+    }
+}
+pub enum TrustAnchor {
+    Entity(EntityConfig),
+    Subject(String),
+}
 
 #[derive(Debug, Clone)]
 pub struct TrustChain<Config: FetchConfig = DefaultConfig> {
@@ -202,8 +215,8 @@ impl Entity {
 impl<Config: FetchConfig> TrustChain<Config> {
     pub fn find_shortest_trust_chain(
         &self,
-        trust_anchors: Option<&[[u8; 32]]>,
-    ) -> Result<Vec<[u8; 32]>, FederationError> {
+        trust_anchors: Option<&TrustStore>,
+    ) -> Result<Vec<EntityStatement>, FederationError> {
         let Some(ec) = self.leaf.entity_config.as_ref() else {
             return Err(FederationError::TrustChain(
                 TrustChainError::InvalidEntityConfig(format!("leaf needs EC")),
@@ -220,7 +233,7 @@ impl<Config: FetchConfig> TrustChain<Config> {
 
         while let Some(current) = queue.pop_front() {
             if let Some(trust_anchors) = trust_anchors
-                && trust_anchors.contains(&current)
+                && trust_anchors.is_trusted(current)
             {
                 let mut path = vec![current];
                 let mut node = current;
@@ -229,7 +242,25 @@ impl<Config: FetchConfig> TrustChain<Config> {
                     node = *parent_hash;
                 }
                 path.reverse();
-                return Ok(path);
+                let mut chain = Vec::new();
+                if let Some(entity_config_leaf) = self.trust_graph.edge_weight(path[0], path[0]) {
+                    chain.push(entity_config_leaf.clone());
+                }
+                for window in path.windows(2) {
+                    let Some(entity_statement) = self.trust_graph.edge_weight(window[1], window[0])
+                    else {
+                        return Err(FederationError::TrustChain(TrustChainError::BrokenChain(
+                            format!("No entity statement found"),
+                        )));
+                    };
+                    chain.push(entity_statement.clone());
+                }
+                if let Some(root_ec) = self.trust_graph.edge_weight(current, current) {
+                    if root_ec.authority_hints.is_none() && root_ec.iss == root_ec.sub {
+                        chain.push(root_ec.clone());
+                    }
+                }
+                return Ok(chain);
             }
             // if we define no trust anchors we break after finding the first CA
             else if trust_anchors.is_none() {
@@ -242,7 +273,26 @@ impl<Config: FetchConfig> TrustChain<Config> {
                             node = *parent_hash;
                         }
                         path.reverse();
-                        return Ok(path);
+                        let mut chain = Vec::new();
+                        if let Some(entity_config_leaf) =
+                            self.trust_graph.edge_weight(path[0], path[0])
+                        {
+                            chain.push(entity_config_leaf.clone());
+                        }
+                        for window in path.windows(2) {
+                            let Some(entity_statement) =
+                                self.trust_graph.edge_weight(window[1], window[0])
+                            else {
+                                return Err(FederationError::TrustChain(
+                                    TrustChainError::BrokenChain(format!(
+                                        "No entity statement found"
+                                    )),
+                                ));
+                            };
+                            chain.push(entity_statement.clone());
+                        }
+                        chain.push(ec.clone());
+                        return Ok(chain);
                     }
                 }
             }

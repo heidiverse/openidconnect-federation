@@ -111,7 +111,10 @@ mod tests {
 
     use crate::{
         DefaultConfig, DefaultTrustChain,
-        models::{self, EntityConfig, EntityStatement, trust_chain::TrustChain},
+        models::{
+            self, EntityConfig, EntityStatement,
+            trust_chain::{TrustAnchor, TrustChain, TrustStore},
+        },
         policy::operators::Policy,
     };
 
@@ -322,19 +325,17 @@ mod tests {
         trust_chain.build_trust().unwrap();
         trust_chain.verify().unwrap();
 
-        let first_anchor: [u8; 32] = Sha256::digest("root2").into();
-        let second_anchor: [u8; 32] = Sha256::digest("root").into();
+        // let first_anchor: TrustAnchor = TrustAnchor::Subject("root2".to_string());
+        let second_anchor: TrustAnchor = TrustAnchor::Subject("root".to_string());
 
+        let trust_store = TrustStore(vec![second_anchor]);
         let paths = trust_chain
-            .find_shortest_trust_chain(Some(&[second_anchor]))
+            .find_shortest_trust_chain(Some(&trust_store))
             .unwrap();
         println!("Best path found:");
-        for e in paths.windows(2) {
-            let edge = &trust_chain.trust_graph[(e[1], e[0])];
-            println!("   {:?}", edge.sub());
+        for s in paths {
+            println!("{}", s.sub());
         }
-        let edge = &trust_chain.trust_graph[(*paths.last().unwrap(), *paths.last().unwrap())];
-        println!("   {:?}", edge.sub());
     }
 
     fn create_ec(
