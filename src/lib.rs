@@ -97,7 +97,10 @@ mod tests {
             creator::{JwtCreator, Signer},
         },
     };
-    use petgraph::algo::astar;
+    use petgraph::{
+        algo::astar,
+        dot::{Config, Dot},
+    };
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
     use tracing::{debug, level_filters::LevelFilter};
@@ -107,7 +110,7 @@ mod tests {
         DefaultConfig, DefaultFederationRelation,
         models::{
             self, EntityConfig, EntityStatement,
-            trust_chain::{TrustAnchor, TrustStore},
+            trust_chain::{NodeId, TrustAnchor, TrustStore},
         },
         policy::operators::Policy,
     };
@@ -314,6 +317,43 @@ mod tests {
         println!(
             "{}",
             serde_json::to_string_pretty(&resolved_metadata).unwrap()
+        );
+
+        println!(
+            "{:?}",
+            Dot::with_attr_getters(
+                &trust_chain.trust_graph,
+                &[Config::EdgeNoLabel, Config::NodeNoLabel],
+                &|_, id| {
+                    if id.0 == id.1 {
+                        String::from("color = \"red\", label = \"EntityConfig\"")
+                    } else {
+                        String::new()
+                    }
+                },
+                &|_, node_id| {
+                    {
+                        let Some(entity) = trust_chain
+                            .trust_entities
+                            .iter()
+                            .find(|e| NodeId::from(Sha256::digest(e.0)) == node_id.0)
+                        else {
+                            return String::new();
+                        };
+                        if let Some(ec) = &entity.1.entity_config {
+                            format!("label = \"{}\"", ec.sub())
+                        } else {
+                            format!(
+                                "label = \"{}\"",
+                                entity.1.subordinate_statement[0]
+                                    .payload_unverified()
+                                    .insecure()
+                                    .sub()
+                            )
+                        }
+                    }
+                }
+            )
         );
     }
 
