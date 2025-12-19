@@ -301,7 +301,7 @@ mod tests {
         trust_chain.build_trust().unwrap();
         trust_chain.verify().unwrap();
 
-        // let first_anchor: TrustAnchor = TrustAnchor::Subject("root2".to_string());
+        let first_anchor: TrustAnchor = TrustAnchor::Subject("root2".to_string());
         let second_anchor: TrustAnchor = TrustAnchor::Subject("root".to_string());
 
         let trust_store = TrustStore(vec![second_anchor]);
@@ -311,6 +311,334 @@ mod tests {
         println!("Best path found:");
         for s in paths {
             println!("{}", s.sub());
+        }
+
+        let resolved_metadata = trust_chain.resolve_metadata(None);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&resolved_metadata).unwrap()
+        );
+
+        println!(
+            "{:?}",
+            Dot::with_attr_getters(
+                &trust_chain.trust_graph,
+                &[Config::EdgeNoLabel, Config::NodeNoLabel],
+                &|_, id| {
+                    if id.0 == id.1 {
+                        String::from("color = \"red\", label = \"EntityConfig\"")
+                    } else {
+                        String::new()
+                    }
+                },
+                &|_, node_id| {
+                    {
+                        let Some(entity) = trust_chain
+                            .trust_entities
+                            .iter()
+                            .find(|e| NodeId::from(Sha256::digest(e.0)) == node_id.0)
+                        else {
+                            return String::new();
+                        };
+                        if let Some(ec) = &entity.1.entity_config {
+                            format!("label = \"{}\"", ec.sub())
+                        } else {
+                            format!(
+                                "label = \"{}\"",
+                                entity.1.subordinate_statement[0]
+                                    .payload_unverified()
+                                    .insecure()
+                                    .sub()
+                            )
+                        }
+                    }
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn test_large_federation_relation() {
+        // Create Anchor A (node 8)
+        let anchor_a_key = heidi_jwt::ES256.generate_key_pair().unwrap();
+        let anchor_a_jwk = anchor_a_key.to_jwk_key_pair();
+        let (anchor_a_jwt, anchor_a_signer) = create_ec(
+            "Anchor A",
+            &Value::Null,
+            &Value::Null,
+            &anchor_a_jwk,
+            &Value::Null,
+        );
+
+        // Create Anchor B (node 9)
+        let anchor_b_key = heidi_jwt::ES256.generate_key_pair().unwrap();
+        let anchor_b_jwk = anchor_b_key.to_jwk_key_pair();
+        let (anchor_b_jwt, anchor_b_signer) = create_ec(
+            "Anchor B",
+            &Value::Null,
+            &Value::Null,
+            &anchor_b_jwk,
+            &Value::Null,
+        );
+
+        // Create Anchor C (node 10)
+        let anchor_c_key = heidi_jwt::ES256.generate_key_pair().unwrap();
+        let anchor_c_jwk = anchor_c_key.to_jwk_key_pair();
+        let (anchor_c_jwt, anchor_c_signer) = create_ec(
+            "Anchor C",
+            &Value::Null,
+            &Value::Null,
+            &anchor_c_jwk,
+            &Value::Null,
+        );
+
+        // 8 -> 7: Anchor A issues statement about intermediate7
+        let (intermediate7_from_a, intermediate7_key) = create_statement(
+            "Anchor A",
+            "intermediate7",
+            &Value::Null,
+            &Value::Null,
+            &anchor_a_signer,
+        );
+        let intermediate7_signer = heidi_jwt::ES256
+            .signer_from_jwk(&intermediate7_key)
+            .unwrap();
+
+        // 10 -> 7: Anchor C issues statement about intermediate7
+        let (intermediate7_from_c, _) = create_cross_signed(
+            "Anchor C",
+            "intermediate7",
+            &Value::Null,
+            &Value::Null,
+            &anchor_c_signer,
+            &intermediate7_key,
+        );
+
+        // 9 -> 6: Anchor B issues statement about intermediate6
+        let (intermediate6_from_b, intermediate6_key) = create_statement(
+            "Anchor B",
+            "intermediate6",
+            &Value::Null,
+            &Value::Null,
+            &anchor_b_signer,
+        );
+        let intermediate6_signer = heidi_jwt::ES256
+            .signer_from_jwk(&intermediate6_key)
+            .unwrap();
+
+        // 8 -> 6: Anchor A issues statement about intermediate6
+        let (intermediate6_from_a, _) = create_cross_signed(
+            "Anchor A",
+            "intermediate6",
+            &Value::Null,
+            &Value::Null,
+            &anchor_a_signer,
+            &intermediate6_key,
+        );
+
+        // 10 -> 6: Anchor C issues statement about intermediate6
+        let (intermediate6_from_c, _) = create_cross_signed(
+            "Anchor C",
+            "intermediate6",
+            &Value::Null,
+            &Value::Null,
+            &anchor_c_signer,
+            &intermediate6_key,
+        );
+
+        // 7 -> 6: intermediate7 issues statement about intermediate6
+        let (intermediate6_from_7, _) = create_cross_signed(
+            "intermediate7",
+            "intermediate6",
+            &Value::Null,
+            &Value::Null,
+            &intermediate7_signer,
+            &intermediate6_key,
+        );
+
+        // 6 -> 4: intermediate6 issues statement about intermediate4
+        let (intermediate4_from_6, intermediate4_key) = create_statement(
+            "intermediate6",
+            "intermediate4",
+            &Value::Null,
+            &Value::Null,
+            &intermediate6_signer,
+        );
+        let intermediate4_signer = heidi_jwt::ES256
+            .signer_from_jwk(&intermediate4_key)
+            .unwrap();
+
+        // 7 -> 4: intermediate7 issues statement about intermediate4
+        let (intermediate4_from_7, _) = create_cross_signed(
+            "intermediate7",
+            "intermediate4",
+            &Value::Null,
+            &Value::Null,
+            &intermediate7_signer,
+            &intermediate4_key,
+        );
+
+        // 10 -> 4: Anchor C issues statement about intermediate4
+        let (intermediate4_from_c, _) = create_cross_signed(
+            "Anchor C",
+            "intermediate4",
+            &Value::Null,
+            &Value::Null,
+            &anchor_c_signer,
+            &intermediate4_key,
+        );
+
+        // 6 -> 5: intermediate6 issues statement about intermediate5
+        let (intermediate5_from_6, intermediate5_key) = create_statement(
+            "intermediate6",
+            "intermediate5",
+            &Value::Null,
+            &Value::Null,
+            &intermediate6_signer,
+        );
+        let intermediate5_signer = heidi_jwt::ES256
+            .signer_from_jwk(&intermediate5_key)
+            .unwrap();
+
+        // 4 -> 5: intermediate4 issues statement about intermediate5
+        let (intermediate5_from_4, _) = create_cross_signed(
+            "intermediate4",
+            "intermediate5",
+            &Value::Null,
+            &Value::Null,
+            &intermediate4_signer,
+            &intermediate5_key,
+        );
+
+        // 10 -> 5: Anchor C issues statement about intermediate5
+        let (intermediate5_from_c, _) = create_cross_signed(
+            "Anchor C",
+            "intermediate5",
+            &Value::Null,
+            &Value::Null,
+            &anchor_c_signer,
+            &intermediate5_key,
+        );
+
+        // 4 -> 3: intermediate4 issues statement about intermediate3
+        let (intermediate3_from_4, intermediate3_key) = create_statement(
+            "intermediate4",
+            "intermediate3",
+            &Value::Null,
+            &Value::Null,
+            &intermediate4_signer,
+        );
+        let intermediate3_signer = heidi_jwt::ES256
+            .signer_from_jwk(&intermediate3_key)
+            .unwrap();
+
+        // 5 -> 3: intermediate5 issues statement about intermediate3
+        let (intermediate3_from_5, _) = create_cross_signed(
+            "intermediate5",
+            "intermediate3",
+            &Value::Null,
+            &Value::Null,
+            &intermediate5_signer,
+            &intermediate3_key,
+        );
+
+        // 3 -> 1: intermediate3 issues statement about intermediate1
+        let (intermediate1_from_3, intermediate1_key) = create_statement(
+            "intermediate3",
+            "intermediate1",
+            &Value::Null,
+            &Value::Null,
+            &intermediate3_signer,
+        );
+        let intermediate1_signer = heidi_jwt::ES256
+            .signer_from_jwk(&intermediate1_key)
+            .unwrap();
+
+        // 3 -> 2: intermediate3 issues statement about intermediate2
+        let (intermediate2_from_3, intermediate2_key) = create_statement(
+            "intermediate3",
+            "intermediate2",
+            &Value::Null,
+            &Value::Null,
+            &intermediate3_signer,
+        );
+        let intermediate2_signer = heidi_jwt::ES256
+            .signer_from_jwk(&intermediate2_key)
+            .unwrap();
+
+        // 1 -> 0: intermediate1 issues statement about leaf
+        let (leaf_from_1, leaf_key) = create_statement(
+            "intermediate1",
+            "leaf",
+            &Value::Null,
+            &Value::Null,
+            &intermediate1_signer,
+        );
+
+        // 2 -> 0: intermediate2 issues statement about leaf
+        let (leaf_from_2, _) = create_cross_signed(
+            "intermediate2",
+            "leaf",
+            &Value::Null,
+            &Value::Null,
+            &intermediate2_signer,
+            &leaf_key,
+        );
+
+        // 0 -> 0: leaf entity config
+        let (leaf_ec, _) = create_ec(
+            "leaf",
+            &json!({ "openid_provider": {
+                "issuer" : "https://test.example.com"
+            } }),
+            &Value::Null,
+            &leaf_key,
+            &json!(["intermediate1", "intermediate2"]),
+        );
+
+        let chain = vec![
+            leaf_ec,
+            leaf_from_1,
+            leaf_from_2,
+            intermediate1_from_3,
+            intermediate2_from_3,
+            intermediate3_from_4,
+            intermediate3_from_5,
+            intermediate4_from_6,
+            intermediate4_from_7,
+            intermediate4_from_c,
+            intermediate5_from_6,
+            intermediate5_from_4,
+            intermediate5_from_c,
+            intermediate6_from_b,
+            intermediate6_from_a,
+            intermediate6_from_c,
+            intermediate6_from_7,
+            intermediate7_from_a,
+            intermediate7_from_c,
+            anchor_a_jwt,
+            anchor_b_jwt,
+            anchor_c_jwt,
+        ];
+
+        let mut trust_chain = DefaultFederationRelation::from_trust_cache(&chain).unwrap();
+
+        trust_chain.build_trust().unwrap();
+        trust_chain.verify().unwrap();
+
+        let anchor_a: TrustAnchor = TrustAnchor::Subject("Anchor A".to_string());
+        let anchor_b: TrustAnchor = TrustAnchor::Subject("Anchor B".to_string());
+        let anchor_c: TrustAnchor = TrustAnchor::Subject("Anchor C".to_string());
+
+        // let trust_store = TrustStore(vec![anchor_a, anchor_b, anchor_c]);
+        // let trust_store = TrustStore(vec![anchor_a, anchor_b, anchor_c]);
+        let trust_store = TrustStore(vec![anchor_c]);
+        let paths = trust_chain
+            .find_shortest_trust_chain(Some(&trust_store))
+            .unwrap();
+        println!("Best path found:");
+        for s in paths {
+            println!("   {}", s.sub());
         }
 
         let resolved_metadata = trust_chain.resolve_metadata(None);
