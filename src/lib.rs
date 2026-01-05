@@ -97,10 +97,7 @@ mod tests {
             creator::{JwtCreator, Signer},
         },
     };
-    use petgraph::{
-        algo::astar,
-        dot::{Config, Dot},
-    };
+    use petgraph::dot::{Config, Dot};
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
     use tracing::{debug, level_filters::LevelFilter};
@@ -112,7 +109,6 @@ mod tests {
             self, EntityConfig, EntityStatement,
             trust_chain::{NodeId, TrustAnchor, TrustStore},
         },
-        policy::operators::Policy,
     };
 
     #[test]
@@ -190,8 +186,7 @@ mod tests {
     fn fetch_from_url_procivis() {
         let subscriber = FmtSubscriber::builder()
             .with_line_number(true)
-            .with_max_level(LevelFilter::INFO)
-            .with_span_events(FmtSpan::ENTER | FmtSpan::CLOSE)
+            .with_max_level(LevelFilter::ERROR)
             .pretty()
             .finish();
         let _ = tracing::subscriber::set_global_default(subscriber);

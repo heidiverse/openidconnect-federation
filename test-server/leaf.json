@@ -1,0 +1,9 @@
+{
+  "kty": "EC",
+  "kid": "leaf",
+  "alg": "ES256",
+  "crv": "P-256",
+  "d": "UAF-p1GnyZTtkEgk8qp4DlGahUQ_izVFQf1n2NjpEa0",
+  "x": "vFUmrZcqzk_qX-oRVhX8_xO0k7stZfGh0Rfng7yXqdM",
+  "y": "54FstHgsSAqdnrpgz2sXQ5GZjPhJTkQA7abLKG6RMgg"
+}

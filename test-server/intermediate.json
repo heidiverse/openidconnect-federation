@@ -1,0 +1,9 @@
+{
+  "kty": "EC",
+  "kid": "intermediate",
+  "alg": "ES256",
+  "crv": "P-256",
+  "d": "fonmvdFErXmxWISzWxNshqvebXLqQYlR8AOETs2pzXs",
+  "x": "rHqAS8BLfgMPAemgw1OMJ_CepNdY52aLl-nkCnLtABQ",
+  "y": "91K7ThaP0YbrS1gmVdVnYY9Ot6d8buobIC6L2Pc2BXQ"
+}

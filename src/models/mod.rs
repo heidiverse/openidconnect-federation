@@ -229,23 +229,36 @@ impl EntityConfig {
 }
 
 crate::models!(
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Default)]
     pub struct EntityStatement {
         iss: String,
         sub: String,
         iat: u64,
         exp: u64,
         jwks: JwkSet,
+        #[serde(skip_serializing_if = "Option::is_none")]
         authority_hints: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<HashMap<String, transformer::Value>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         metadata_policy: Option<HashMap<String, transformer::Value>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         constraints: Option<transformer::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         crit: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         metadata_policy_crit: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         trust_marks: Option<Vec<TrustMark>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         trust_mark_issuers: Option<transformer::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         trust_mark_owners: Option<TrustMarkOwner>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        trust_mark_owners_crit: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         source_endpoint: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         trust_anchor: Option<String>,
     }
 );
