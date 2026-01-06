@@ -177,8 +177,9 @@ mod tests {
         let issuer = "http://localhost:3000";
         let mut trust_chain = DefaultFederationRelation::new_from_url(issuer).unwrap();
         let res_trust = trust_chain.build_trust();
-        debug!(error = ?res_trust, "[build_trust]");
+
         let res_verify = trust_chain.verify();
+        debug!(error = ?res_trust, "[build_trust]");
         debug!(error = ?res_verify, "[verify_trust]");
         assert!(res_trust.is_ok() && res_verify.is_ok())
     }

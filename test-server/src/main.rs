@@ -1,45 +1,126 @@
 use std::{collections::HashMap, sync::LazyLock};
 
-use axum::{Router, extract::Query, http::HeaderName, routing::get};
-use heidi_jwt::{
-    Jwk, JwkSet, JwsHeader,
-    chrono::Duration,
-    jwt::{Jwt, creator::JwtCreator},
+use axum::{
+    Router,
+    extract::{Query, State},
+    http::HeaderName,
+    routing::get,
 };
-use openidconnect_federation::models::{EntityStatement, EntityStatementBuilder};
+use heidi_jwt::{Jwk, JwkSet, JwsHeader, chrono::Duration, jwt::creator::JwtCreator};
+use openidconnect_federation::models::{EntityStatementBuilder, transformer::Value};
 use serde_json::json;
 
-static KEYS: LazyLock<HashMap<String, Jwk>> = LazyLock::new(|| {
+static PARTIES: LazyLock<HashMap<String, FederationParty>> = LazyLock::new(|| {
     let leaf: Jwk = serde_json::from_str(include_str!("../leaf.json")).unwrap();
     let intermediate: Jwk = serde_json::from_str(include_str!("../intermediate.json")).unwrap();
     let root: Jwk = serde_json::from_str(include_str!("../root.json")).unwrap();
+    let leaf_party = FederationParty {
+        keys: {
+            let mut set = JwkSet::new();
+            set.push_key(leaf);
+            set
+        },
+        authorities: Some(vec!["http://localhost:3000/intermediate".to_string()]),
+        subject: String::from("http://localhost:3000"),
+        metadata: {
+            let mut metadata = HashMap::new();
+            let federation_entity = json!({
+                "organization_name" : "Leaf"
+            });
+            metadata.insert("federation_entity".to_string(), federation_entity.into());
+            metadata
+        },
+        subordinates: HashMap::new(),
+    };
+    let intermediate_party = FederationParty {
+        keys: {
+            let mut set = JwkSet::new();
+            set.push_key(intermediate);
+            set
+        },
+        authorities: Some(vec!["http://localhost:3000/root".to_string()]),
+        subject: String::from("http://localhost:3000/intermediate"),
+        metadata: {
+            let mut metadata = HashMap::new();
+            let federation_entity = json!({
+                "organization_name" : "Intermediate",
+                "federation_fetch_endpoint" : "http://localhost:3000/intermediate/fetch-subordinate"
+            });
+            metadata.insert("federation_entity".to_string(), federation_entity.into());
+            metadata
+        },
+        subordinates: {
+            let mut map = HashMap::new();
+            map.insert("http://localhost:3000".to_string(), leaf_party.clone());
+            map
+        },
+    };
     HashMap::from([
-        ("leaf".to_string(), leaf),
-        ("intermediate".to_string(), intermediate),
-        ("root".to_string(), root),
+        ("http://localhost:3000".to_string(), leaf_party),
+        (
+            "http://localhost:3000/intermediate".to_string(),
+            intermediate_party.clone(),
+        ),
+        (
+            "http://localhost:3000/root".to_string(),
+            FederationParty {
+                keys: {
+                    let mut set = JwkSet::new();
+                    set.push_key(root);
+                    set
+                },
+                authorities: None,
+                subject: String::from("http://localhost:3000/root"),
+                metadata: {
+                    let mut metadata = HashMap::new();
+                    let federation_entity = json!({
+                        "organization_name" : "Root Trust!!",
+                        "federation_fetch_endpoint" : "http://localhost:3000/root/fetch-subordinate"
+                    });
+                    metadata.insert("federation_entity".to_string(), federation_entity.into());
+                    metadata
+                },
+                subordinates: {
+                    let mut map = HashMap::new();
+                    map.insert(
+                        "http://localhost:3000/intermediate".to_string(),
+                        intermediate_party,
+                    );
+                    map
+                },
+            },
+        ),
     ])
 });
 
 #[tokio::main]
 async fn main() {
     let app = Router::new()
-        .route("/.well-known/openid-federation", get(leaf_ec))
-        .nest("/intermediate", intermediate_router())
-        .nest("/root", root_router());
+        .route("/.well-known/openid-federation", get(entity_config))
+        .with_state(PARTIES["http://localhost:3000"].clone())
+        .nest(
+            "/intermediate",
+            federation_router("http://localhost:3000/intermediate"),
+        )
+        .nest("/root", federation_router("http://localhost:3000/root"));
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
 
-fn intermediate_router() -> Router {
+fn federation_router(sub: &str) -> Router {
     Router::new()
-        .route("/.well-known/openid-federation", get(intermediate_ec))
+        .route("/.well-known/openid-federation", get(entity_config))
         .route("/fetch-subordinate", get(fetch_subordinate))
+        .with_state(PARTIES[sub].clone())
 }
 
-fn root_router() -> Router {
-    Router::new()
-        .route("/.well-known/openid-federation", get(root_ec))
-        .route("/fetch-subordinate", get(fetch_subordinate))
+#[derive(Clone, Debug)]
+pub struct FederationParty {
+    keys: JwkSet,
+    authorities: Option<Vec<String>>,
+    subject: String,
+    metadata: HashMap<String, Value>,
+    subordinates: HashMap<String, FederationParty>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -48,86 +129,15 @@ struct FetchSubordinateRequest {
     subject: String,
 }
 
-async fn leaf_ec() -> ([(HeaderName, &'static str); 1], String) {
-    println!("fetching leaf ec");
-    let mut subject_keys = JwkSet::new();
-    let mut pub_key = KEYS["leaf"].to_public_key().unwrap();
-    pub_key.set_key_id(KEYS["leaf"].key_id().unwrap());
-    subject_keys.push_key(pub_key);
-    let ec = EntityStatement {
-        iss: "http://localhost:3000".to_string(),
-        sub: "http://localhost:3000".to_string(),
-        iat: 0,
-        exp: 0,
-        jwks: heidi_jwt::models::JwkSet(subject_keys),
-        metadata: None,
-        authority_hints: Some(vec!["http://localhost:3000/intermediate".to_string()]),
-        ..Default::default()
-    };
-    let signer = heidi_jwt::ES256.signer_from_jwk(&KEYS["leaf"]).unwrap();
-    let mut jws_header = JwsHeader::new();
-    jws_header.set_algorithm(heidi_jwt::ES256.name());
-    jws_header.set_token_type("entity-statement+jwt");
-    jws_header.set_key_id(KEYS["leaf"].key_id().unwrap());
-    let ec = ec
-        .create_jwt(
-            &jws_header,
-            Some("http://localhost:3000"),
-            Duration::minutes(5),
-            &signer,
-        )
-        .unwrap();
-    (
-        [(
-            "Content-Type".parse().unwrap(),
-            "application/entity-statement+jwt",
-        )],
-        ec,
-    )
-}
-
-async fn intermediate_ec() -> ([(HeaderName, &'static str); 1], String) {
-    println!("fetching intermediate ec");
-    let mut subject_keys = JwkSet::new();
-    let mut pub_key = KEYS["intermediate"].to_public_key().unwrap();
-    pub_key.set_key_id(KEYS["intermediate"].key_id().unwrap());
-    subject_keys.push_key(pub_key);
-    let federation_entity = json!({ "federation_fetch_endpoint" : "http://localhost:3000/intermediate/fetch-subordinate" }).into();
-    let metadata = HashMap::from([("federation_entity".to_string(), federation_entity)]);
-    let ec = EntityStatementBuilder::new()
-        .iss("http://localhost:3000/intermediate".to_string())
-        .sub("http://localhost:3000/intermediate".to_string())
-        .jwks(heidi_jwt::models::JwkSet(subject_keys))
-        .metadata(Some(metadata))
-        .authority_hints(Some(vec!["http://localhost:3000/root".to_string()]))
-        .build();
-
-    let signer = heidi_jwt::ES256
-        .signer_from_jwk(&KEYS["intermediate"])
-        .unwrap();
-    let mut jws_header = JwsHeader::new();
-    jws_header.set_algorithm(heidi_jwt::ES256.name());
-    jws_header.set_token_type("entity-statement+jwt");
-    jws_header.set_key_id(KEYS["intermediate"].key_id().unwrap());
-    let ec = ec
-        .create_jwt(&jws_header, None, Duration::minutes(5), &signer)
-        .unwrap();
-    (
-        [(
-            "Content-Type".parse().unwrap(),
-            "application/entity-statement+jwt",
-        )],
-        ec,
-    )
-}
-async fn root_ec() -> ([(HeaderName, &'static str); 1], String) {
-    println!("fetching root ec");
-    let federation_entity =
-        json!({ "federation_fetch_endpoint" : "http://localhost:3000/root/fetch-subordinate" })
-            .into();
-    let metadata = HashMap::from([("federation_entity".to_string(), federation_entity)]);
-
-    let ec = create_entity_config("http://localhost:3000/root", metadata, None, &KEYS["root"]);
+async fn entity_config(
+    State(entity): State<FederationParty>,
+) -> ([(HeaderName, &'static str); 1], String) {
+    let ec = create_entity_config(
+        &entity.subject,
+        entity.metadata.clone(),
+        entity.authorities.map(|a| a.first().unwrap().to_string()),
+        entity.keys.keys().first().unwrap().clone(),
+    );
     (
         [(
             "Content-Type".parse().unwrap(),
@@ -138,58 +148,34 @@ async fn root_ec() -> ([(HeaderName, &'static str); 1], String) {
 }
 
 async fn fetch_subordinate(
+    State(entity): State<FederationParty>,
     Query(subject): Query<FetchSubordinateRequest>,
 ) -> Result<([(HeaderName, &'static str); 1], String), String> {
-    println!("Fetching subordinate entity for {}", subject.subject);
-    match subject.subject.as_str() {
-        "http://localhost:3000" => {
-            let ec = create_subordinate_statement(
-                "http://localhost:3000",
-                "http://localhost:3000/intermediate",
-                None,
-                &KEYS["leaf"],
-                &KEYS["intermediate"],
-            );
-            Ok((
-                [(
-                    "Content-Type".parse().unwrap(),
-                    "application/entity-statement+jwt",
-                )],
-                ec,
-            ))
-        }
-        "http://localhost:3000/intermediate" => {
-            let mut subject_keys = JwkSet::new();
-            let mut pub_key = KEYS["intermediate"].to_public_key().unwrap();
-            pub_key.set_key_id(KEYS["intermediate"].key_id().unwrap());
-            subject_keys.push_key(pub_key);
-            let ec = EntityStatement {
-                iss: "http://localhost:3000/root".to_string(),
-                sub: "http://localhost:3000/intermediate".to_string(),
-                iat: 0,
-                exp: 0,
-                jwks: heidi_jwt::models::JwkSet(subject_keys),
-                metadata: None,
-                ..Default::default()
-            };
-            let signer = heidi_jwt::ES256.signer_from_jwk(&KEYS["root"]).unwrap();
-            let mut jws_header = JwsHeader::new();
-            jws_header.set_algorithm(heidi_jwt::ES256.name());
-            jws_header.set_token_type("entity-statement+jwt");
-            jws_header.set_key_id(KEYS["root"].key_id().unwrap());
-            let ec = ec
-                .create_jwt(&jws_header, None, Duration::minutes(5), &signer)
-                .unwrap();
-            Ok((
-                [(
-                    "Content-Type".parse().unwrap(),
-                    "application/entity-statement+jwt",
-                )],
-                ec,
-            ))
-        }
-        _ => return Err("Invalid subject".to_string()),
+    if entity.subordinates.len() == 0 {
+        return Err("No subordinate entities found".to_string());
     }
+    println!(
+        "Fetching subordinate entity for {} [{}]",
+        subject.subject, entity.subject
+    );
+    let ec = create_subordinate_statement(
+        &subject.subject,
+        &entity.subject,
+        None,
+        entity.subordinates[subject.subject.as_str()]
+            .keys
+            .keys()
+            .first()
+            .unwrap(),
+        entity.keys.keys().first().unwrap(),
+    );
+    Ok((
+        [(
+            "Content-Type".parse().unwrap(),
+            "application/entity-statement+jwt",
+        )],
+        ec,
+    ))
 }
 
 fn create_entity_config(
