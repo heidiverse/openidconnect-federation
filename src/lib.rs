@@ -186,7 +186,7 @@ mod tests {
     fn fetch_from_url_procivis() {
         let subscriber = FmtSubscriber::builder()
             .with_line_number(true)
-            .with_max_level(LevelFilter::ERROR)
+            .with_max_level(LevelFilter::INFO)
             .pretty()
             .finish();
         let _ = tracing::subscriber::set_global_default(subscriber);
@@ -196,7 +196,12 @@ mod tests {
         let res = trust_chain.build_trust();
         debug!(error = ?res, "[build_trust]");
         let res = trust_chain.verify();
+
         debug!(error = ?res, "[verify_trust]");
+        let trust_chain = trust_chain.find_shortest_trust_chain(None).unwrap();
+        for c in trust_chain {
+            println!("{:?}", c.iss);
+        }
     }
 
     #[test]

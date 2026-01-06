@@ -1,13 +1,9 @@
 use std::{collections::HashMap, sync::LazyLock};
 
-use axum::{
-    Router,
-    extract::Query,
-    http::{HeaderMap, HeaderName},
-    routing::get,
-};
+use axum::{Router, extract::Query, http::HeaderName, routing::get};
 use heidi_jwt::{Jwk, JwkSet, JwsHeader, chrono::Duration, jwt::creator::JwtCreator};
-use openidconnect_federation::models::{EntityConfig, EntityStatement};
+use openidconnect_federation::models::EntityStatement;
+use serde_json::json;
 
 static KEYS: LazyLock<HashMap<String, Jwk>> = LazyLock::new(|| {
     let leaf: Jwk = serde_json::from_str(include_str!("../leaf.json")).unwrap();
@@ -47,14 +43,103 @@ struct FetchSubordinateRequest {
 }
 
 async fn leaf_ec() -> ([(HeaderName, &'static str); 1], String) {
-    todo! {}
+    let mut subject_keys = JwkSet::new();
+    let mut pub_key = KEYS["leaf"].to_public_key().unwrap();
+    pub_key.set_key_id(KEYS["leaf"].key_id().unwrap());
+    subject_keys.push_key(pub_key);
+    let ec = EntityStatement {
+        iss: "http://localhost:3000".to_string(),
+        sub: "http://localhost:3000".to_string(),
+        iat: 0,
+        exp: 0,
+        jwks: heidi_jwt::models::JwkSet(subject_keys),
+        metadata: None,
+        authority_hints: Some(vec!["http://localhost:3000/intermediate".to_string()]),
+        ..Default::default()
+    };
+    let signer = heidi_jwt::ES256.signer_from_jwk(&KEYS["leaf"]).unwrap();
+    let mut jws_header = JwsHeader::new();
+    jws_header.set_algorithm(heidi_jwt::ES256.name());
+    jws_header.set_token_type("entity-statement+jwt");
+    jws_header.set_key_id(KEYS["leaf"].key_id().unwrap());
+    let ec = ec
+        .create_jwt(&jws_header, None, Duration::minutes(5), &signer)
+        .unwrap();
+    (
+        [(
+            "Content-Type".parse().unwrap(),
+            "application/entity-statement+jwt",
+        )],
+        ec,
+    )
 }
 
 async fn intermediate_ec() -> ([(HeaderName, &'static str); 1], String) {
-    todo! {}
+    let mut subject_keys = JwkSet::new();
+    let mut pub_key = KEYS["intermediate"].to_public_key().unwrap();
+    pub_key.set_key_id(KEYS["intermediate"].key_id().unwrap());
+    subject_keys.push_key(pub_key);
+    let federation_entity = json!({ "federation_fetch_endpoint" : "http://localhost:3000/intermediate/fetch-subordinate" }).into();
+    let metadata = HashMap::from([("federation_entity".to_string(), federation_entity)]);
+    let ec = EntityStatement {
+        iss: "http://localhost:3000/intermediate".to_string(),
+        sub: "http://localhost:3000/intermediate".to_string(),
+        iat: 0,
+        exp: 0,
+        jwks: heidi_jwt::models::JwkSet(subject_keys),
+        metadata: Some(metadata),
+        authority_hints: Some(vec!["http://localhost:3000/root".to_string()]),
+        ..Default::default()
+    };
+    let signer = heidi_jwt::ES256
+        .signer_from_jwk(&KEYS["intermediate"])
+        .unwrap();
+    let mut jws_header = JwsHeader::new();
+    jws_header.set_algorithm(heidi_jwt::ES256.name());
+    jws_header.set_token_type("entity-statement+jwt");
+    jws_header.set_key_id(KEYS["intermediate"].key_id().unwrap());
+    let ec = ec
+        .create_jwt(&jws_header, None, Duration::minutes(5), &signer)
+        .unwrap();
+    (
+        [(
+            "Content-Type".parse().unwrap(),
+            "application/entity-statement+jwt",
+        )],
+        ec,
+    )
 }
 async fn root_ec() -> ([(HeaderName, &'static str); 1], String) {
-    todo! {}
+    let mut subject_keys = JwkSet::new();
+    let mut pub_key = KEYS["root"].to_public_key().unwrap();
+    pub_key.set_key_id(KEYS["root"].key_id().unwrap());
+    subject_keys.push_key(pub_key);
+    let federation_entity = json!({ "federation_fetch_endpoint" : "http://localhost:3000/intermediate/fetch-subordinate" }).into();
+    let metadata = HashMap::from([("federation_entity".to_string(), federation_entity)]);
+    let ec = EntityStatement {
+        iss: "http://localhost:3000/root".to_string(),
+        sub: "http://localhost:3000/root".to_string(),
+        iat: 0,
+        exp: 0,
+        jwks: heidi_jwt::models::JwkSet(subject_keys),
+        metadata: Some(metadata),
+        ..Default::default()
+    };
+    let signer = heidi_jwt::ES256.signer_from_jwk(&KEYS["root"]).unwrap();
+    let mut jws_header = JwsHeader::new();
+    jws_header.set_algorithm(heidi_jwt::ES256.name());
+    jws_header.set_token_type("entity-statement+jwt");
+    jws_header.set_key_id(KEYS["root"].key_id().unwrap());
+    let ec = ec
+        .create_jwt(&jws_header, None, Duration::minutes(5), &signer)
+        .unwrap();
+    (
+        [(
+            "Content-Type".parse().unwrap(),
+            "application/entity-statement+jwt",
+        )],
+        ec,
+    )
 }
 
 async fn fetch_subordinate(

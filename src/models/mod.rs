@@ -340,6 +340,33 @@ macro_rules! models {
             #[serde(flatten)]
             pub additional_fields: serde_json::Map<String, serde_json::Value>,
         }
+        paste::paste! {
+            pub struct [<$name Builder>] {
+                 $($field: Option<$type>,)*
+            }
+
+            impl [<$name Builder>] {
+                pub fn new() -> Self {
+                    [<$name Builder>] {
+                        $($field: None,)*
+                    }
+                }
+
+                $(
+                    pub fn $field(mut self, $field: $type) -> Self {
+                        self.$field = Some($field);
+                        self
+                    }
+                )*
+
+                pub fn build(self) -> $name {
+                    $name {
+                        $($field: self.$field.unwrap_or_default(),)*
+                        additional_fields: serde_json::Map::new(),
+                    }
+                }
+            }
+        }
         impl $name {
             $(
                 pub fn $field(&self) -> $type {
