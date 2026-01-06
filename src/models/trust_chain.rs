@@ -113,6 +113,7 @@ impl Entity {
             //TODO: refresh leaf
             error!("Leaf entity config verification failed");
         }
+
         let leaf_sub_hash: [u8; 32] = Sha256::digest(leaf_ec.sub()).into();
         trust_graph.add_edge(
             leaf_sub_hash,
@@ -168,6 +169,12 @@ impl Entity {
                 let ec = leaf_ec.fetch_authority(&hint)?;
                 let subordinate = ec.fetch_subordinate(&leaf_ec.sub())?;
                 self.subordinate_statement.push(subordinate.clone());
+                // update self in trust entities
+                if let Some(sub_state) =
+                    trust_entities.get_mut(&subordinate.payload_unverified().insecure().sub())
+                {
+                    sub_state.subordinate_statement.push(subordinate.clone());
+                }
                 //TODO: is there a better way to handle the self referential issue of entity and completing trust?
                 let entry = trust_entities.entry(ec.sub()).or_insert(Entity {
                     entity_config: None,
@@ -380,18 +387,18 @@ impl<Config: FetchConfig> FederationRelation<Config> {
             }
             // we for sure need a subordinate statement if we are not a trust anchor
             if statement.subordinate_statement.is_empty() && !is_trustanchor {
-                errors.push(TrustChainError::BrokenChain(
-                    "sub: broken trust chain".to_string(),
-                ));
+                errors.push(TrustChainError::BrokenChain(format!(
+                    "sub: broken trust chain {sub}"
+                )));
             }
             // check all subordinate statements of this entity (check with the issuer)
             for sub_state in &statement.subordinate_statement {
                 let iss = sub_state.payload_unverified().insecure().iss();
 
                 let Some(issuer) = self.trust_entities.get(&iss) else {
-                    errors.push(TrustChainError::BrokenChain(
-                        "{sub}: missing issuer {iss}".to_string(),
-                    ));
+                    errors.push(TrustChainError::BrokenChain(format!(
+                        "{sub}: missing issuer {iss}"
+                    )));
                     continue;
                 };
 
@@ -465,13 +472,15 @@ impl<Config: FetchConfig> FederationRelation<Config> {
         }
     }
     pub fn new_from_url(url: &str) -> Result<Self, FederationError> {
+        let leaf_entity = Entity {
+            entity_config: Some(EntityConfig::load_from_url::<Config>(url)?),
+            subordinate_statement: vec![],
+        };
+        let trust_entities = HashMap::from([(url.to_string(), leaf_entity.clone())]);
         Ok(Self {
-            leaf: Entity {
-                entity_config: Some(EntityConfig::load_from_url::<Config>(url)?),
-                subordinate_statement: vec![],
-            },
+            leaf: leaf_entity.clone(),
             trust_anchors: Vec::new(),
-            trust_entities: HashMap::new(),
+            trust_entities,
             trust_graph: DiGraphMap::new(),
             phantom: PhantomData,
         })
