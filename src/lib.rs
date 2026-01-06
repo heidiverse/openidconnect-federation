@@ -174,12 +174,13 @@ mod tests {
             .pretty()
             .finish();
         let _ = tracing::subscriber::set_global_default(subscriber);
-        let issuer = "https://heidi-issuer-ws-dev.ubique.ch/zvv/c";
+        let issuer = "http://localhost:3000";
         let mut trust_chain = DefaultFederationRelation::new_from_url(issuer).unwrap();
-        let res = trust_chain.build_trust();
-        debug!(error = ?res, "[build_trust]");
-        let res = trust_chain.verify();
-        debug!(error = ?res, "[verify_trust]");
+        let res_trust = trust_chain.build_trust();
+        debug!(error = ?res_trust, "[build_trust]");
+        let res_verify = trust_chain.verify();
+        debug!(error = ?res_verify, "[verify_trust]");
+        assert!(res_trust.is_ok() && res_verify.is_ok())
     }
 
     #[test]
