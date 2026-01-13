@@ -68,6 +68,155 @@ pub struct Entity {
 
 impl Entity {
     #[instrument(err, skip(self, trust_entities))]
+    pub async fn complete_trust_async(
+        &mut self,
+        trust_entities: &mut HashMap<String, Entity>,
+        trust_anchors: &mut Vec<String>,
+        trust_graph: &mut DiGraphMap<[u8; 32], EntityStatement>,
+    ) -> Result<(), FederationError> {
+        // If we have no entity config, we should already have all trust entities. Hence we can do
+        // the graph building offline.
+        if self.entity_config.is_none() {
+            for subordinate_statement in &self.subordinate_statement {
+                let iss_hash: [u8; 32] =
+                    Sha256::digest(&subordinate_statement.payload_unverified().insecure().iss)
+                        .into();
+                let sub_hash: [u8; 32] =
+                    Sha256::digest(&subordinate_statement.payload_unverified().insecure().sub)
+                        .into();
+                trust_graph.add_edge(
+                    iss_hash,
+                    sub_hash,
+                    subordinate_statement
+                        .payload_unverified()
+                        .insecure()
+                        .clone(),
+                );
+                let mut old_entities = trust_entities.clone();
+                if let Some(iss) = trust_entities
+                    .get_mut(&subordinate_statement.payload_unverified().insecure().iss)
+                {
+                    iss.complete_trust(&mut old_entities, trust_anchors, trust_graph)?;
+                }
+                *trust_entities = old_entities;
+            }
+            return Ok(());
+        }
+
+        let Some(leaf_ec) = self.entity_config.as_ref() else {
+            return Err(TrustChainError::InvalidEntityConfig(
+                "Leaf entity config not found".to_string(),
+            )
+            .into());
+        };
+        if leaf_ec.verify().is_err() {
+            //TODO: refresh leaf
+            error!("Leaf entity config verification failed");
+        }
+
+        let leaf_sub_hash: [u8; 32] = Sha256::digest(leaf_ec.sub()).into();
+        trust_graph.add_edge(
+            leaf_sub_hash,
+            leaf_sub_hash,
+            leaf_ec.payload_unverified().insecure().clone(),
+        );
+
+        let is_trust_anchor = leaf_ec
+            .payload_unverified()
+            .insecure()
+            .authority_hints
+            .is_none();
+        println!(
+            "{} : {:?}",
+            leaf_ec.payload_unverified().insecure().iss,
+            leaf_ec.payload_unverified().insecure().authority_hints
+        );
+        if is_trust_anchor {
+            trust_anchors.push(leaf_ec.payload_unverified().insecure().iss.to_string());
+        }
+
+        // check if we have all sub statements from the authorities
+        for hint in leaf_ec
+            .payload_unverified()
+            .insecure()
+            .authority_hints()
+            .unwrap_or(vec![])
+        {
+            if let Some(subordinate_statement) = self
+                .subordinate_statement
+                .iter()
+                .find(|stmt| stmt.payload_unverified().insecure().iss() == hint.as_str())
+            {
+                let iss_hash: [u8; 32] =
+                    Sha256::digest(&subordinate_statement.payload_unverified().insecure().iss)
+                        .into();
+                trust_graph.add_edge(
+                    iss_hash,
+                    leaf_sub_hash,
+                    subordinate_statement
+                        .payload_unverified()
+                        .insecure()
+                        .clone(),
+                );
+                let mut old_entities = trust_entities.clone();
+                if let Some(iss) = trust_entities
+                    .get_mut(&subordinate_statement.payload_unverified().insecure().iss)
+                {
+                    iss.complete_trust(&mut old_entities, trust_anchors, trust_graph)?;
+                }
+                *trust_entities = old_entities;
+            } else {
+                let ec = leaf_ec.fetch_authority_async(&hint).await?;
+                let subordinate = ec.fetch_subordinate_async(&leaf_ec.sub()).await?;
+                self.subordinate_statement.push(subordinate.clone());
+                // update self in trust entities
+                if let Some(sub_state) =
+                    trust_entities.get_mut(&subordinate.payload_unverified().insecure().sub())
+                {
+                    sub_state.subordinate_statement.push(subordinate.clone());
+                }
+                //TODO: is there a better way to handle the self referential issue of entity and completing trust?
+                let entry = trust_entities.entry(ec.sub()).or_insert(Entity {
+                    entity_config: None,
+                    subordinate_statement: vec![],
+                });
+
+                if matches!(ec, EntityConfig::TrustAnchor(_)) {
+                    trust_anchors.push(ec.sub());
+                }
+                entry.entity_config = Some(ec.clone());
+                let mut old_entities = trust_entities.clone();
+
+                let entry = trust_entities
+                    .get_mut(&ec.sub())
+                    .expect("We just inserted it");
+                let sub_hash = Sha256::digest(ec.sub()).into();
+                trust_graph.add_edge(
+                    sub_hash,
+                    leaf_sub_hash,
+                    subordinate.payload_unverified().insecure().clone(),
+                );
+
+                let _ = Box::pin(entry.complete_trust_async(
+                    &mut old_entities,
+                    trust_anchors,
+                    trust_graph,
+                ))
+                .await;
+                *trust_entities = old_entities;
+            }
+        }
+        for subordinate_statement in &self.subordinate_statement {
+            if leaf_ec.sub() != subordinate_statement.payload_unverified().insecure().sub() {
+                return Err(TrustChainError::SubjectMismatch(
+                    "Subordinate statement sub does not match".to_string(),
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+    #[instrument(err, skip(self, trust_entities))]
     pub fn complete_trust(
         &mut self,
         trust_entities: &mut HashMap<String, Entity>,
@@ -471,6 +620,20 @@ impl<Config: FetchConfig> FederationRelation<Config> {
             phantom: PhantomData,
         }
     }
+    pub async fn new_from_url_async(url: &str) -> Result<Self, FederationError> {
+        let leaf_entity = Entity {
+            entity_config: Some(EntityConfig::load_from_url_async::<Config>(url).await?),
+            subordinate_statement: vec![],
+        };
+        let trust_entities = HashMap::from([(url.to_string(), leaf_entity.clone())]);
+        Ok(Self {
+            leaf: leaf_entity.clone(),
+            trust_anchors: Vec::new(),
+            trust_entities,
+            trust_graph: DiGraphMap::new(),
+            phantom: PhantomData,
+        })
+    }
     pub fn new_from_url(url: &str) -> Result<Self, FederationError> {
         let leaf_entity = Entity {
             entity_config: Some(EntityConfig::load_from_url::<Config>(url)?),
@@ -588,6 +751,19 @@ impl<Config: FetchConfig> FederationRelation<Config> {
     }
     #[instrument(skip(self))]
     pub fn build_trust(&mut self) -> Result<(), FederationError> {
+        let mut trust_anchors = vec![];
+        let mut trust_graph = DiGraphMap::new();
+        self.leaf.complete_trust(
+            &mut self.trust_entities,
+            &mut trust_anchors,
+            &mut trust_graph,
+        )?;
+        self.trust_anchors = trust_anchors;
+        self.trust_graph = trust_graph;
+        Ok(())
+    }
+    #[instrument(skip(self))]
+    pub async fn build_trust_async(&mut self) -> Result<(), FederationError> {
         let mut trust_anchors = vec![];
         let mut trust_graph = DiGraphMap::new();
         self.leaf.complete_trust(

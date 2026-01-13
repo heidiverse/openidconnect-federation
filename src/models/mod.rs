@@ -29,7 +29,7 @@ use serde_json::Value as JsonValue;
 use tracing::instrument;
 
 use crate::{
-    DefaultConfig, FetchConfig, fetch_jwt,
+    DefaultConfig, FetchConfig, fetch_jwt, fetch_jwt_async,
     models::{
         errors::{FederationError, JwsError, TrustChainError},
         transformer::Value,
@@ -112,6 +112,51 @@ impl EntityConfig {
         };
         Ok(())
     }
+
+    #[instrument(skip(self), err)]
+    pub async fn fetch_subordinate_async(
+        &self,
+        sub: &str,
+    ) -> Result<Jwt<EntityStatement>, FederationError> {
+        match self {
+            EntityConfig::Leaf(_) => Err(TrustChainError::LeafCannotHaveSubordinate(
+                "Leaf entities cannot have subordinates".to_string(),
+            )
+            .into()),
+            EntityConfig::Intermediate(jwt) | EntityConfig::TrustAnchor(jwt) => {
+                let es = jwt.payload_unverified();
+                let es = jwt
+                    .payload(
+                        &es.insecure().jwks,
+                        &DefaultVerifier::new("entity-statement+jwt".to_string(), vec![]),
+                    )
+                    .map_err(|e| FederationError::Jws(JwsError::BodyParseError(format!("{e}"))))?;
+                let Some(metadata) = es.metadata.as_ref() else {
+                    return Err(TrustChainError::InvalidEntityConfig(
+                        "Entity Config must have metadata".to_string(),
+                    )
+                    .into());
+                };
+                let Some(federation_entity) = metadata.get("federation_entity") else {
+                    return Err(TrustChainError::InvalidEntityConfig(
+                        "Entity Config must have federation_entity".to_string(),
+                    )
+                    .into());
+                };
+                let mut fe = FederationEntity::default();
+                federation_entity.write_to_transformer(&mut fe);
+                let Some(federation_fetch_endpoint) = fe.federation_fetch_endpoint else {
+                    return Err(TrustChainError::InvalidEntityConfig("Federation Entity must have federation_fetch_endpoint for non leaf entities".to_string()).into());
+                };
+                fetch_jwt_async::<_, DefaultConfig>(&format!(
+                    "{federation_fetch_endpoint}?sub={}",
+                    urlencoding::encode(sub)
+                ))
+                .await
+            }
+        }
+    }
+
     #[instrument(skip(self), err)]
     pub fn fetch_subordinate(&self, sub: &str) -> Result<Jwt<EntityStatement>, FederationError> {
         match self {
@@ -153,6 +198,36 @@ impl EntityConfig {
     }
 
     #[instrument(skip(self), err)]
+    pub async fn fetch_authority_async(
+        &self,
+        authority: &str,
+    ) -> Result<EntityConfig, FederationError> {
+        match self {
+            EntityConfig::Leaf(_) | EntityConfig::Intermediate(_) => {
+                let config = fetch_jwt_async::<EntityStatement, DefaultConfig>(&format!(
+                    "{authority}/.well-known/openid-federation"
+                ))
+                .await?;
+                Ok(
+                    if config
+                        .payload_unverified()
+                        .insecure()
+                        .authority_hints
+                        .is_some()
+                    {
+                        EntityConfig::Intermediate(config)
+                    } else {
+                        EntityConfig::TrustAnchor(config)
+                    },
+                )
+            }
+            EntityConfig::TrustAnchor(_) => {
+                Err(TrustChainError::RootHasNoAuthority("TrustAnchor".to_string()).into())
+            }
+        }
+    }
+
+    #[instrument(skip(self), err)]
     pub fn fetch_authority(&self, authority: &str) -> Result<EntityConfig, FederationError> {
         match self {
             EntityConfig::Leaf(_) | EntityConfig::Intermediate(_) => {
@@ -183,6 +258,11 @@ impl EntityConfig {
     pub fn load_from_url<Config: FetchConfig>(url: &str) -> Result<Self, FederationError> {
         let new_statement =
             fetch_jwt::<_, Config>(&format!("{url}/.well-known/openid-federation",))?;
+        Ok(Self::Leaf(new_statement))
+    }
+    async fn load_from_url_async<Config: FetchConfig>(url: &str) -> Result<Self, FederationError> {
+        let new_statement =
+            fetch_jwt_async::<_, Config>(&format!("{url}/.well-known/openid-federation",)).await?;
         Ok(Self::Leaf(new_statement))
     }
     pub fn refresh<Config: FetchConfig>(&mut self) -> Result<(), FederationError> {
