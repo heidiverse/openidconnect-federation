@@ -327,7 +327,7 @@ crate::models!(
         #[serde(skip_serializing_if = "Option::is_none")]
         crit: Option<Vec<String>>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        metadata_policy_crit: Option<Vec<String>>,
+        metadata_policy_crit: Option<transformer::Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         trust_marks: Option<Vec<TrustMark>>,
         #[serde(skip_serializing_if = "Option::is_none")]
